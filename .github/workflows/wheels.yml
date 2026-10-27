@@ -15,45 +15,34 @@ permissions:
 
 jobs:
   build-wheels:
-    strategy:
-      fail-fast: false
-      matrix:
-        # One runner per OS/arch, because cibuildwheel builds for the host it
-        # runs on: CIBW_ARCHS defaults to "auto", so the runner label is what
-        # picks the wheel architecture. Nothing here is cross compiled, and
-        # Windows wheels exist only because of the two Windows runners.
-        include:
-          - { target: linux-x86_64,    runner: ubuntu-24.04 }
-          - { target: linux-aarch64,   runner: ubuntu-24.04-arm }
-          - { target: macos-arm64,     runner: macos-15 }
-          - { target: macos-x86_64,    runner: macos-15-intel }
-          - { target: windows-x86_64,  runner: windows-2025 }
-          - { target: windows-aarch64, runner: windows-11-arm }
-
-    name: ${{ matrix.target }}
-    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     defaults:
       run:
         shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - windows-latest
+          - windows-11-arm
+          - macos-15-intel
+          - macos-15
 
     steps:
+      # Check out the code
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      # Execute build wheels
+      - name: Build Wheels 
+        uses: pypa/cibuildwheel@v4.3.5
+
+      # Upload the wheels
+      - uses: actions/upload-artifact@v4
         with:
-          python-version: '3.12'
-
-      - name: Install cibuildwheel
-        run: pip install --upgrade 'cibuildwheel==4.3.0'
-
-      - name: Build wheels
-        run: make wheels
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: cibw-wheels-${{ matrix.target }}
+          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: ./wheelhouse/*.whl
           if-no-files-found: error

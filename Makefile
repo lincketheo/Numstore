@@ -42,10 +42,6 @@ test-simtest: debug
 		--commit-hash $(COMMIT) \
 		--seqid $(SEED)
 
-.PHONY: test-python
-test-python: dev pytest
-
-
 ############ Release
 .PHONY: release-package
 release-package: release
@@ -199,33 +195,35 @@ leaks-simtest: build/memcheck/bin/ns_simtest
 #############################################
 ### pynumstore
 
-# Newest wheel in dist -- several can pile up across python versions
-WHEEL = $$(ls -t dist/pynumstore-*.whl | head -1)
+PKG_PY_SRCS     := $(shell find pynumstore -name '*.py' -o -name "*.pyi")
+PKG_NATIVE_SRCS := $(shell find . \( -name '*.c' -o -name '*.h' -o -name '*.cmake' -o -name 'CMakeLists.txt' \) -not -path '*build*')
 
+build/python/.installed: $(PKG_PY_SRCS) $(PKG_NATIVE_SRCS) pyproject.toml version.txt
+	python3 -m pip install '.[test]'
+	mkdir -p build/python
+	touch build/python/.installed
+ 
+.PHONY: python-install
+python-install: build/python/.installed
+ 
+.PHONY: python-reinstall
+python-reinstall:
+	rm -rf build/python build/wheel
+	$(MAKE) python-install
+ 
+# Run from inside pytest/ so the tests import the installed package,
+# not the ./pynumstore source directory.
+.PHONY: test-python
+test-python: python-install
+	cd pytest && python3 -m pytest -ra --tb=short
+ 
 .PHONY: wheel
 wheel:
-	python3 -m build -C cmake.build-type=Release --wheel . --outdir dist
-
-.PHONY: wheels
-wheels:
-	python3 -m cibuildwheel --output-dir wheelhouse .
-
+	python3 -m build --wheel . --outdir dist
+ 
 .PHONY: sdist
 sdist:
-	python3 -m build -C cmake.build-type=Release --sdist . --outdir dist
-
-.PHONY: wheel
-install: wheel
-	python3 -m pip install --force-reinstall --no-deps $(WHEEL)
-	python3 -m pip install numpy
-
-.PHONY: dev
-dev:
-	python3 -m pip install -e '.[test]'
-
-.PHONY: pytest
-pytest:
-	python3 -m pytest pytest
+	python3 -m build --sdist . --outdir dist
 
 #############################################
 ### Housekeeping

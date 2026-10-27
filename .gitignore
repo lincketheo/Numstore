@@ -1110,7 +1110,6 @@ wheelhouse/
 testdb
 # unit_tests and the samples open databases by bare name in the CWD.
 # Anchored so they can't shadow pytest/ or any test directory.
-/test
 /foo
 history.txt
 vgcore.*
@@ -1131,4 +1130,11 @@ docgen_tmp/
 /sample5_durability
 /ns_api_test_*
 
-.claude
+# Claude Code local files & developer overrides
+.claude/settings.local.json
+.claude/*.local.*
+CLAUDE.local.md
+
+# Credentials and transient state (if created in repo)
+.claude.json
+.credentials.json

@@ -12,26 +12,22 @@ concurrency:
 
 jobs:
   build-and-test:
-    strategy:
-      fail-fast: false
-      matrix:
-        # Runner labels are pinned rather than using -latest so a target's
-        # architecture can't silently change under us. Windows entries set
-        # msvc_arch to pick the MSVC target architecture.
-        include:
-          - { target: linux-x86_64,    runner: ubuntu-24.04 }
-          - { target: linux-aarch64,   runner: ubuntu-24.04-arm }
-          - { target: macos-arm64,     runner: macos-15 }
-          - { target: macos-x86_64,    runner: macos-15-intel }
-          - { target: windows-x86_64,  runner: windows-2025,   msvc_arch: x64 }
-          - { target: windows-aarch64, runner: windows-11-arm, msvc_arch: arm64 }
-
-    name: ${{ matrix.target }}
+    name: ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     defaults:
       run:
         shell: bash
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: ubuntu-24.04 }
+          - { runner: ubuntu-24.04-arm }
+          - { runner: macos-15 }
+          - { runner: macos-15-intel }
+          - { runner: windows-2025,   msvc_arch: x64 }
+          - { runner: windows-11-arm, msvc_arch: arm64 }
 
     steps:
       - uses: actions/checkout@v4
@@ -42,23 +38,17 @@ jobs:
         with:
           arch: ${{ matrix.msvc_arch }}
 
-      # unit_tests and ns_simtest only exist when CMAKE_BUILD_TYPE is Debug,
-      # which multi-config generators ignore. Force Ninja so Windows gets a
-      # single-config build too; msvc-dev-cmd leaves a usable ninja on PATH.
       - name: Use Ninja on Windows
         if: runner.os == 'Windows'
         run: echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
 
       - name: Report toolchain
         run: |
-          echo "target:  ${{ matrix.target }}"
           echo "runner:  ${{ matrix.runner }} ($RUNNER_OS/$RUNNER_ARCH)"
           echo "machine: $(uname -m)"
           cmake --version | head -1
           make --version | head -1
 
-      # Each step is one target in the root Makefile, so the cmake invocations
-      # and test arguments live in one place rather than being duplicated here.
       - name: Debug build and unit tests
         run: make test-unit
 
