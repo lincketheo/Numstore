@@ -13,10 +13,10 @@
 /// limitations under the License.
 
 #include "core/ns_error.h"
+#include "core/ns_stdtypes.h"
 #include "core/ns_testing.h"
 #include "core/os/ns_malloc.h"
 #include "nscore/pager/ns_pager.h"
-#include "numstore.h"
 
 #ifndef NDEBUG
 

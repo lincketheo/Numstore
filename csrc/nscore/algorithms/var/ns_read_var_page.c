@@ -31,7 +31,6 @@
 #include "nscore/pager/ns_pager.h"
 #include "nscore/types/ns_types.h"
 #include "nscore/variables/ns_variables.h"
-#include "numstore.h"
 
 #include <stdbool.h>
 #include <stdio.h>

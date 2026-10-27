@@ -21,7 +21,6 @@
 #include "core/ns_serial.h"
 #include "core/ns_stdtypes.h"
 #include "core/ns_stream.h"
-#include "numstore.h"
 
 #include <stdbool.h>
 

@@ -26,7 +26,6 @@
 #include "nscore/pager/ns_pager.h"
 #include "nscore/types/ns_types.h"
 #include "nscore/variables/ns_variables.h"
-#include "numstore.h"
 
 static err_t
 ns_consume_one_var (struct pager *p, page_h *cur, var_consumer var, void *ctx, error *e)

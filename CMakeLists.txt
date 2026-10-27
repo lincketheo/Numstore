@@ -28,7 +28,12 @@ file(
     csrc/core/*.c
     csrc/nscore/*.c
 )
-list(APPEND NUMSTORE_SOURCES csrc/numstore.c)
+
+# csrc/numstore.c is the public C API (include/numstore.h). pynumstore talks
+# to nscore/nsdb directly, so a wheel build leaves it out entirely.
+if(NOT SKBUILD)
+    list(APPEND NUMSTORE_SOURCES csrc/numstore.c)
+endif()
 
 add_library(numstore STATIC ${NUMSTORE_SOURCES})
 add_library(numstore::numstore ALIAS numstore)

@@ -19,6 +19,7 @@
 #include "core/ns_error.h"
 #include "core/ns_numerics.h"
 #include "core/ns_slab_alloc.h"
+#include "core/ns_stdtypes.h"
 #include "core/ns_testing.h"
 #include "core/os/ns_malloc.h"
 #include "core/os/ns_os.h"
@@ -29,7 +30,6 @@
 #include "nscore/types/ns_query.h"
 #include "nscore/types/ns_types.h"
 #include "nscore/variables/ns_variables.h"
-#include "numstore.h"
 
 #include <stdio.h>
 #include <string.h>
