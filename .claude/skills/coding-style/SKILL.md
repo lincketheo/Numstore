@@ -1,6 +1,6 @@
 ---
 name: coding-style
-description: Conventions for writing, refactoring and reviewing code in any language: simple code, function intent and locality, assertions, failure handling, terse visual comments, tests beside code; with security and performance references.
+description: Conventions for writing, refactoring and reviewing code in any language simple code, function intent and locality, assertions, failure handling, terse visual comments, tests beside code; with security and performance references.
 ---
 
 Coding style and conventions
