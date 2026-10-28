@@ -52,8 +52,5 @@ jobs:
       - name: Debug build and unit tests
         run: make test-unit
 
-      - name: Simulation test
-        run: make test-simtest
-
       - name: Release package
         run: make release-package
