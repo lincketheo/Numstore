@@ -79,7 +79,7 @@ CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
 CMakeScripts
-Testing
+/Testing/
 Makefile
 !/Makefile
 cmake_install.cmake
