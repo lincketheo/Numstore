@@ -86,7 +86,6 @@ void in_push_left (page *in, p_size len);
 void in_push_left_permissive (page *in, p_size len);
 void in_cut_left (page *in, p_size end);
 void in_set_data (page *p, struct in_data data);
-struct in_data in_get_data (const page *p, struct in_pair nodes[IN_MAX_KEYS]);
 void in_move_left (page *dest, page *src, p_size len);
 void in_move_right (page *src, page *dest, p_size len);
 void in_choose_lidx (p_size *idx, b_size *nleft, const page *node, b_size loc);
@@ -228,8 +227,33 @@ in_is_root (const page *in)
 #define in_get_last_leaf(in)       in_get_leaf (in, in_get_len (in) - 1)
 #define in_full(in)                (in_get_len (in) == IN_MAX_KEYS)
 
-////////////////////////////////////////////////////////////
-// /
+struct inner_node
+{
+  struct in_pair pairs[IN_MAX_KEYS];
+  p_size         plen;
+  p_size         avail;
+  bool           full;
+  pgno           npg;
+  pgno           ppg;
+  bool           is_root;
+};
+
+HEADER_FUNC void
+in_get (struct inner_node *dest, const page *p)
+{
+  dest->plen    = in_get_len (p);
+  dest->avail   = in_get_avail (p);
+  dest->full    = in_full (p);
+  dest->npg     = in_get_next (p);
+  dest->ppg     = in_get_prev (p);
+  dest->is_root = in_is_root (p);
+
+  for (p_size i = 0; i < dest->plen; ++i) {
+    dest->pairs[i].key = in_get_key (p, i);
+    dest->pairs[i].pg  = in_get_leaf (p, i);
+  }
+}
+
 ////////////////////////////////////////////////////////////
 // SETTERS
 

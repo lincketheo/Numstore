@@ -19,7 +19,14 @@ What is Numstore?
 =================
 
 Numstore is a database for arrays. It is an ACID database meant to store
-contiguous arrays of numerical values.
+contiguous arrays of numerical values. 
+
+Features include:
+
+1. Transaction Support 
+2. Durability on power failure 
+3. O(log N) inner array mutations (insert / remove)
+4. A simple but extendable type system that mimics numpy's dtype
 
 How is it different than other databases?
 -----------------------------------------

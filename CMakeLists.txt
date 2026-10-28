@@ -20,22 +20,19 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 #####################################################################
 ### The numstore library
-# csrc/ also holds the entry points below, so the library globs its two
-# source trees rather than everything under csrc/.
-file(
-    GLOB_RECURSE NUMSTORE_SOURCES
-    CONFIGURE_DEPENDS
-    csrc/core/*.c
-    csrc/nscore/*.c
-)
+# csrc/ also holds the entry points below, so the library collects sources
+# from its two source trees rather than everything under csrc/.
+set(LIBNUMSTORE_SRCS "")
+add_subdirectory(csrc/core)
+add_subdirectory(csrc/nscore)
 
 # csrc/numstore.c is the public C API (include/numstore.h). pynumstore talks
 # to nscore/nsdb directly, so a wheel build leaves it out entirely.
 if(NOT SKBUILD)
-    list(APPEND NUMSTORE_SOURCES csrc/numstore.c)
+    list(APPEND LIBNUMSTORE_SRCS csrc/numstore.c)
 endif()
 
-add_library(numstore STATIC ${NUMSTORE_SOURCES})
+add_library(numstore STATIC ${LIBNUMSTORE_SRCS})
 add_library(numstore::numstore ALIAS numstore)
 
 target_include_directories(
@@ -91,9 +88,8 @@ if(SKBUILD)
 endif()
 
 #####################################################################
-### ns_simtest
-add_executable(ns_simtest apps/ns_simtest.c)
-target_link_libraries(ns_simtest PRIVATE numstore)
+### apps
+add_subdirectory(apps)
 
 #####################################################################
 ### samples
@@ -130,7 +126,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         DEPENDS
             ${CMAKE_CURRENT_SOURCE_DIR}/apps/gen_tests.py
             ${CMAKE_CURRENT_SOURCE_DIR}/apps/unit_tests.c.in
-            ${NUMSTORE_SOURCES}
+            ${LIBNUMSTORE_SRCS}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Generating unit_tests.c"
         VERBATIM

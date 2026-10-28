@@ -24,6 +24,7 @@
 #include "core/ns_utils.h"
 #include "core/os/ns_malloc.h"
 #include "nscore/compiler/ns_compiler.h"
+#include "nscore/compiler/ns_lexer.h"
 #include "nscore/page/ns_page_var_hash_page.h"
 #include "nscore/types/ns_types.h"
 
@@ -291,14 +292,19 @@ var_random_name (char *buffer, u32 length)
   int alpha_size    = sizeof (alpha_pool) - 1;
   int generous_size = sizeof (generous_pool) - 1;
 
-  // First char must strictly be an alpha or underscore
-  buffer[0]         = alpha_pool[randu32 () % alpha_size];
+  // A keyword or a primitive type name has a valid identifier shape but will
+  // not parse as a variable name, so roll again until the name is usable
+  do {
+    // First char must strictly be an alpha or underscore
+    buffer[0] = alpha_pool[randu32 () % alpha_size];
 
-  // Remaining chars can use the generous pool
-  for (u32 i = 1; i < length - 1; i++) {
-    buffer[i] = generous_pool[randu32 () % generous_size];
+    // Remaining chars can use the generous pool
+    for (u32 i = 1; i < length - 1; i++) {
+      buffer[i] = generous_pool[randu32 () % generous_size];
+    }
+    buffer[length - 1] = '\0';
   }
-  buffer[length - 1] = '\0';
+  while (lex_is_keyword (buffer, length - 1));
 }
 
 #ifndef NDEBUG
@@ -341,6 +347,21 @@ TEST (var_random_name)
   char single[1];
   var_random_name (single, 1);
   test_assert_int_equal ((int)single[0], '\0');
+
+  // A generated name must never come back as a keyword or a primitive type
+  // name. Such a name has a valid identifier shape but does not parse as one,
+  // so `create if u32` fails to compile -- ns_simtest hit exactly that with
+  // the names "if" and "i8".
+  //
+  // Only short names can collide (the longest reserved word is 6 chars), so
+  // roll the short lengths hard rather than many lengths lightly.
+  for (u32 length = 3; length <= 8; length++) {
+    for (int trial = 0; trial < 10000; trial++) {
+      char buf[9];
+      var_random_name (buf, length);
+      test_assert (!lex_is_keyword (buf, length - 1));
+    }
+  }
 }
 
 #endif // TESTING

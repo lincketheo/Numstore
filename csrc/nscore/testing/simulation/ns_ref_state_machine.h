@@ -52,6 +52,12 @@ const char *ns_ref_cur_name (struct ns_ref *ref);
 b_size ns_ref_cur_len (struct ns_ref *ref);
 t_size ns_ref_cur_tsize (struct ns_ref *ref);
 bool ns_ref_var_exists (struct ns_ref *ref, const char *name);
+
+/**
+ * As ns_ref_var_exists, for a name that is not null terminated -- a variable
+ * name read back out of the database is a struct string, not a C string.
+ */
+bool ns_ref_var_exists_str (struct ns_ref *ref, struct string name);
 const char *ns_ref_random_var (struct ns_ref *ref);
 
 // State Machine Actions

@@ -186,8 +186,14 @@ ns_ref_cur_tsize (struct ns_ref *ref)
 bool
 ns_ref_var_exists (struct ns_ref *ref, const char *name)
 {
+  return ns_ref_var_exists_str (ref, strfcstr (name));
+}
+
+bool
+ns_ref_var_exists_str (struct ns_ref *ref, struct string name)
+{
   struct db_state *state = ns_ref_cur (ref);
-  return mem_vhmap_get (state->db_data, strfcstr (name)) != NULL;
+  return mem_vhmap_get (state->db_data, name) != NULL;
 }
 
 const char *

@@ -46,3 +46,6 @@ test-command = "python -m pytest pytest"
 testpaths = ["pytest"]
 pythonpath = ["pytest"]
 addopts = ["--import-mode=importlib"]
+# Test modules are named after the pynumstore module they cover (database.py,
+# query.py, ...), not test_*.py, so collection needs every file in testpaths.
+python_files = ["*.py"]

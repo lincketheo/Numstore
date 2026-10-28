@@ -19,6 +19,7 @@
 #include "core/ns_testing.h"
 #include "core/os/ns_malloc.h"
 #include "core/os/ns_os.h"
+#include "nscore/algorithms/rope/ns_rope_algorithms.h"
 #include "nscore/disk_pager/ns_file_pager.h"
 #include "nscore/nsdb/ns_nsdb.h"
 
@@ -529,6 +530,52 @@ ns_db_write (struct ns_db *db, const void *data, b_size dlen, struct stride str,
   }
 
   return ret;
+}
+
+err_t
+ns_db_visit_vars (struct ns_db *db, var_consumer cb, void *ctx, error *e)
+{
+  return ns_visit_variables (db->db->p, cb, ctx, e);
+}
+
+static err_t
+validate_one_rope (struct variable *v, void *ctx, error *e)
+{
+  return ns_rope_validate ((struct pager *)ctx, v->rpt_root, e);
+}
+
+err_t
+ns_db_validate_all (struct ns_db *db, error *e)
+{
+  return ns_visit_variables (db->db->p, validate_one_rope, db->db->p, e);
+}
+
+err_t
+ns_db_validate (struct ns_db *db, error *e)
+{
+  char *cur = ns_db_cur (db);
+  ASSERT (cur);
+
+  // Construct the query
+  struct nsdb_plan *plan = nsdb_plan_fcreate (db->db, "get %s", e, cur, cur);
+  if (plan == NULL) {
+    return error_trace (e);
+  }
+  struct nsdb_var *var = nsdb_plan_get_var (plan, db->tx, e);
+  if (var == NULL) {
+    nsdb_plan_free (plan);
+    return error_trace (e);
+  }
+  pgno root = nsdb_var_rpt_root (var);
+  nsdb_plan_free (plan);
+  nsdb_var_free (var);
+
+  // Do validation step
+  if (ns_rope_validate (db->db->p, root, e) < 0) {
+    return error_trace (e);
+  }
+
+  return SUCCESS;
 }
 
 #ifndef NDEBUG

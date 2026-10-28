@@ -1,0 +1,9 @@
+list(
+    APPEND LIBNUMSTORE_SRCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/ns_wal.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ns_wal_istream.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ns_wal_ostream.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ns_wal_record.c
+)
+
+set(LIBNUMSTORE_SRCS ${LIBNUMSTORE_SRCS} PARENT_SCOPE)

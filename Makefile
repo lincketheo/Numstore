@@ -37,7 +37,7 @@ test-simtest: debug
 	exe=$(DEBUG_BIN)/ns_simtest; [ -f "$$exe.exe" ] && exe="$$exe.exe"; \
 	"$$exe" \
 		--dbname simtest.db \
-		--duration 5 \
+		--duration 50 \
 		--seed $(SEED) \
 		--commit-hash $(COMMIT) \
 		--seqid $(SEED)

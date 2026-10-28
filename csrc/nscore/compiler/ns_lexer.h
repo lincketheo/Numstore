@@ -44,4 +44,10 @@ err_t lex_tokens (
     error              *e
 );
 
+/**
+ * True if [text, text + len) lexes as a primitive type or a keyword rather
+ * than an identifier, so it cannot be used as a variable name.
+ */
+bool lex_is_keyword (const char *text, u32 len);
+
 #endif

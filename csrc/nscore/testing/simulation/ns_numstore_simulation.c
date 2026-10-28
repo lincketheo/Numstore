@@ -21,6 +21,7 @@
 #include "core/ns_numerics.h"
 #include "core/os/ns_malloc.h"
 #include "core/os/ns_os.h"
+#include "nscore/algorithms/rope/ns_rope_algorithms.h"
 #include "nscore/nsdb/ns_nsdb.h"
 #include "nscore/testing/simulation/ns_db_state_machine.h"
 #include "nscore/testing/simulation/ns_operation_generator.h"
@@ -35,47 +36,44 @@
 
 struct ns_simulation
 {
-  struct ns_ref             *ref;
-  struct ns_db              *db;
+  struct ns_ref     *ref;
+  struct ns_db      *db;
 
   // Which actions are turned on
-  u8                         enabled[NSS_AT_LEN];
+  u8                 enabled[NSS_AT_LEN];
 
-  const char                *dbname;
-  b_size                     max_insert_len;
-  t_size                     max_tsize;
-  float                      sample_space_prob;
+  const char        *dbname;
+  b_size             max_insert_len;
+  t_size             max_tsize;
+  float              sample_space_prob;
 
   // Run identity
-  u64                        seed;
-  const char                *commit_hash;
-  u64                        sequence_id;
+  u64                seed;
+  const char        *commit_hash;
+  u64                sequence_id;
 
   // Run metrics
-  u64                        start;       // Epoch for everything below
-  u64                        step_number; // Which step is the test in
-  u64                        clock;       // Absolute timestamp of the last observation
+  u64                start;       // Epoch for everything below
+  u64                step_number; // Which step is the test in
+  u64                clock;       // Absolute timestamp of the last observation
 
   // Throughput: every byte inserted, removed, read or written over the run
-  u64                        total_bytes_moved;
+  u64                total_bytes_moved;
 
-  i_timer                    timer;
-  struct arena_alloc         alloc;
+  i_timer            timer;
+  struct arena_alloc alloc;
 
   // The OS the system under test runs on (can be faulty)
-  struct i_os                test_os;
+  struct i_os        test_os;
 
   // Memory used by the test (can be faulty)
-  struct i_mem               test_mem;
+  struct i_mem       test_mem;
 
   // Memory used for things that aren't being tested
-  struct i_mem               reliable_mem;
+  struct i_mem       reliable_mem;
 
   // OS used for things that aren't being tested (metrics timers and the like)
-  struct i_os                reliable_os;
-
-  // Configuration
-  enum write_validation_mode write_validation;
+  struct i_os        reliable_os;
 };
 
 ////////// ACTIONS
@@ -109,6 +107,11 @@ nss_crash_and_reopen (struct ns_simulation *meta, error *e)
 {
   ns_ref_crash_and_reopen (meta->ref);
   WRAP (ns_db_crash_and_reopen (meta->db, e));
+
+  // Nothing else validates a rope that the current variable is not pointing
+  // at, so corruption introduced here is otherwise only found when something
+  // happens to read that variable again
+  WRAP (ns_db_validate_all (meta->db, e));
   return SUCCESS;
 }
 
@@ -117,6 +120,8 @@ nss_close_and_reopen (struct ns_simulation *meta, error *e)
 {
   ns_ref_close_and_reopen (meta->ref);
   WRAP (ns_db_close_and_reopen (meta->db, e));
+
+  WRAP (ns_db_validate_all (meta->db, e));
   return SUCCESS;
 }
 
@@ -204,6 +209,79 @@ nss_validate_range (
   return nss_read_compare (meta, ref_buf, db_buf, buf_size, stride, e);
 }
 
+/******************************************************************************
+ *                       Whole-database validation                            *
+ ******************************************************************************/
+
+struct nss_var_check
+{
+  struct ns_simulation *meta;
+  u32                   ndb;     // variables the database reports
+  struct string         unknown; // first one the reference does not have
+  bool                  has_unknown;
+};
+
+static err_t
+nss_check_one_var (struct variable *v, void *ctx, error *e)
+{
+  struct nss_var_check *chk = ctx;
+  (void)e;
+
+  chk->ndb++;
+
+  if (!chk->has_unknown && !ns_ref_var_exists_str (chk->meta->ref, v->vname)) {
+    chk->unknown     = v->vname;
+    chk->has_unknown = true;
+  }
+
+  return SUCCESS;
+}
+
+/**
+ * The database's set of variables has to match the reference's after every
+ * operation.
+ *
+ * nss_validate_after_write only checks the bytes of the current variable, so
+ * a variable that one operation loses outright is not noticed until something
+ * happens to touch it again - which in practice is hundreds of steps later,
+ * long after the operation that caused it has scrolled out of the log.
+ *
+ * ns_db_visit_vars reads through the pager with no transaction, so this can
+ * only run outside one.
+ */
+static err_t
+nss_validate_variables (struct ns_simulation *meta, error *e)
+{
+  if (meta->ref->in_txn) {
+    return SUCCESS;
+  }
+
+  struct nss_var_check chk = {.meta = meta, .ndb = 0, .has_unknown = false};
+  WRAP (ns_db_visit_vars (meta->db, nss_check_one_var, &chk, e));
+
+  u32 nref = ns_ref_nvars (meta->ref);
+  if (chk.ndb != nref) {
+    return error_causef (
+        e,
+        ERR_CORRUPT,
+        "Database holds %u variables, reference holds %u",
+        chk.ndb,
+        nref
+    );
+  }
+
+  if (chk.has_unknown) {
+    return error_causef (
+        e,
+        ERR_CORRUPT,
+        "Database holds variable %.*s, which the reference does not",
+        strfmt (&chk.unknown)
+    );
+  }
+
+  return SUCCESS;
+}
+
 static err_t
 nss_validate_after_write (
     struct ns_simulation *meta,
@@ -220,28 +298,11 @@ nss_validate_after_write (
     return SUCCESS;
   }
 
-  switch (meta->write_validation) {
-    case NSS_READ_EFFECTED_DATA_AFTER_WRITES: {
-      return nss_validate_range (
-          meta,
-          effected_start,
-          effected_nelems,
-          db_buf,
-          ref_buf,
-          buf_size,
-          e
-      );
-    }
-    case NSS_READ_ALL_AFTER_WRITES: {
-      return nss_validate_range (meta, 0, ns_ref_cur_len (meta->ref), db_buf, ref_buf, buf_size, e);
-    }
-    case NSS_READ_NONE_AFTER_WRITES: {
-      return SUCCESS;
-    }
+  if (nss_validate_range (meta, 0, ns_ref_cur_len (meta->ref), db_buf, ref_buf, buf_size, e) < 0) {
+    return error_trace (e);
   }
 
-  ASSERT (0);
-  return SUCCESS;
+  return ns_db_validate (meta->db, e);
 }
 
 static err_t
@@ -320,8 +381,6 @@ nss_remove (struct ns_simulation *meta, struct operation *op, error *e)
     return SUCCESS;
   }
 
-  // Everything from start onwards has shifted, so the effected region is
-  // start to the end of the variable
   b_size start = op->op_remove.str.start;
   if (op->op_remove.str.stride == 0 || start >= len) {
     return SUCCESS;
@@ -818,8 +877,6 @@ ns_simul_open (struct ns_simulation_params params, error *e)
       .reliable_os       = params.reliable_os,
       .test_mem          = params.test_mem,
       .test_os           = params.test_os,
-
-      .write_validation  = params.write_validation,
   };
 
   memcpy (ret->enabled, params.enabled, sizeof (params.enabled));
@@ -854,9 +911,20 @@ ns_simul_close (struct ns_simulation *meta, error *e)
   return error_trace (e);
 }
 
+void
+ns_simul_set_enabled (struct ns_simulation *meta, const u8 enabled[NSS_AT_LEN])
+{
+  ASSERT (meta);
+  memcpy (meta->enabled, enabled, sizeof (meta->enabled));
+}
+
 err_t
 ns_simul_step (struct ns_simulation *meta, error *e)
 {
+  if (meta->step_number == 373) {
+    printf ("HERE\n");
+  }
+
   struct rand_op_params params = {
       .ref        = meta->ref,
       .enabled    = meta->enabled,
@@ -886,6 +954,12 @@ ns_simul_step (struct ns_simulation *meta, error *e)
     case NSS_WRITE: result = nss_write (meta, op, e); break;
     case NSS_NONE_AVAILABLE: break;
     default: UNREACHABLE (); return -1;
+  }
+
+  // Every operation, not just the writes: this is what catches a variable
+  // going missing at the step that lost it
+  if (result >= SUCCESS) {
+    result = nss_validate_variables (meta, e);
   }
 
   nss_log_operation (meta, op, result >= SUCCESS);

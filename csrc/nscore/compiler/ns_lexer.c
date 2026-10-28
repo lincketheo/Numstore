@@ -191,6 +191,18 @@ check_keyword (const char *text, u32 len)
   return TT_IDENTIFIER;
 }
 
+bool
+lex_is_keyword (const char *text, u32 len)
+{
+  // A word is scanned as a primitive type before it is checked against the
+  // keywords, so a primitive name is just as unusable as a keyword
+  if (strtoprim (text, len) != (enum prim_t) - 1) {
+    return true;
+  }
+
+  return check_keyword (text, len) != TT_IDENTIFIER;
+}
+
 static err_t
 scan_string (struct lexer *lex, error *e)
 {
@@ -573,6 +585,37 @@ TEST (lexer_keywords)
   };
 
   test_lexer_case (src, expected, arrlen (expected));
+}
+
+TEST (lex_is_keyword)
+{
+  // Keywords are reserved
+  test_assert (lex_is_keyword ("create", 6));
+  test_assert (lex_is_keyword ("delete", 6));
+  test_assert (lex_is_keyword ("if", 2));
+  test_assert (lex_is_keyword ("exists", 6));
+  test_assert (lex_is_keyword ("struct", 6));
+  test_assert (lex_is_keyword ("union", 5));
+  test_assert (lex_is_keyword ("true", 4));
+  test_assert (lex_is_keyword ("false", 5));
+
+  // A word is scanned as a primitive type before it is checked against the
+  // keywords, so primitive names are reserved too
+  test_assert (lex_is_keyword ("u8", 2));
+  test_assert (lex_is_keyword ("i8", 2));
+  test_assert (lex_is_keyword ("f64", 3));
+  test_assert (lex_is_keyword ("cf128", 5));
+
+  // Ordinary identifiers are not, and only an exact match counts
+  test_assert (!lex_is_keyword ("foo", 3));
+  test_assert (!lex_is_keyword ("_x", 2));
+  test_assert (!lex_is_keyword ("iff", 3));
+  test_assert (!lex_is_keyword ("u8x", 3));
+  test_assert (!lex_is_keyword ("creates", 7));
+  test_assert (!lex_is_keyword ("", 0));
+
+  // The length is what is read, not the terminator
+  test_assert (lex_is_keyword ("ifx", 2));
 }
 
 TEST (lexer_primitives)

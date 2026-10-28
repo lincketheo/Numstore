@@ -141,6 +141,32 @@ dl_is_root (const page *p)
 // Shorthands
 #define dl_full(dl) (dl_used (dl) == DL_DATA_SIZE)
 
+// Get everything (immutable)
+struct data_list
+{
+  const void *data;
+  p_size      dlen;
+  p_size      avail;
+  bool        full;
+  pgno        npg;
+  pgno        ppg;
+  bool        is_root;
+};
+
+HEADER_FUNC struct data_list
+dl_get (const page *p)
+{
+  return (struct data_list){
+      .data    = dl_get_data (p),
+      .dlen    = dl_used (p),
+      .avail   = dl_avail (p),
+      .full    = dl_full (p),
+      .npg     = dl_get_next (p),
+      .ppg     = dl_get_prev (p),
+      .is_root = dl_is_root (p),
+  };
+}
+
 ////////////////////////////////////////////////////////////
 // SETTERS
 

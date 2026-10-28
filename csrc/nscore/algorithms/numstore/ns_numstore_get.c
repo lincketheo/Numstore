@@ -37,8 +37,6 @@ numstore_get (
   ASSERT (var != NULL);
   DBG_ASSERT (clean_error, e);
 
-  fflush (stdout);
-
   // Get Variable
   struct ns_var_get_params gparams = {
       .p     = p,

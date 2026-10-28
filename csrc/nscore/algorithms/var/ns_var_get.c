@@ -65,6 +65,8 @@ ns_var_get (struct ns_var_get_params *params, error *e)
     goto theend;
   }
 
+  // TODO - validate variable here
+
   if (pgr_release (params->p, &cur, PG_VAR_PAGE, e)) {
     goto theend;
   }

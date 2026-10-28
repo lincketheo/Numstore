@@ -327,7 +327,6 @@ main (int argc, char **argv)
   params.reliable_os          = reliable_os;
   params.test_mem             = test_mem;
   params.test_os              = test_os;
-  params.write_validation     = NSS_READ_ALL_AFTER_WRITES;
 
   struct ns_simulation *simul = ns_simul_open (params, &e);
   if (simul == NULL) {

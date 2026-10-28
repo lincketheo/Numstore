@@ -153,8 +153,14 @@ faulty_roll (struct faulty_ctx *ctx, error *e, err_t type)
 
   /**
    * Check fail percent
+   *
+   * The draw is skipped entirely at 0 rather than drawn and discarded. Fault
+   * injection shares the RNG with action selection, so drawing here would
+   * make the stream depend on how many fallible calls the harness happens to
+   * make - and then any change in I/O volume, a read-only validation pass
+   * included, would replay every seed as a different run.
    */
-  if (randf () < ctx->fail_percent) {
+  if (ctx->fail_percent > 0 && randf () < ctx->fail_percent) {
     return error_causef (e, type, "Injected fault");
   }
 
@@ -859,9 +865,9 @@ faulty_mem_roll (struct faulty_mem_ctx *ctx, const char *what, error *e)
   }
 
   /**
-   * Check fail percent
+   * Check fail percent -- skipped at 0, see the note in the OS path above
    */
-  if (randf () < ctx->fail_percent) {
+  if (ctx->fail_percent > 0 && randf () < ctx->fail_percent) {
     error_causef (e, ERR_NOMEM, "%s: injected fault", what);
     return true;
   }
