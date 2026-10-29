@@ -95,14 +95,11 @@ type_validate (const struct type *t, error *e)
       break;
     }
     default: {
-      // Reachable from on-disk data: type_deserialize casts a stored byte
-      // straight to enum type_t, so a corrupt or truncated file lands here.
-      // Report it rather than killing the process.
+      // Serialize sometimes produces an invalid type header
       return error_causef (e, ERR_CORRUPT, "Unknown type code: %d", (int)t->type);
     }
   }
 
-  // Check that it can be written to a serial buffer
   u16 size;
   return type_get_serial_size (&size, t, e);
 }
