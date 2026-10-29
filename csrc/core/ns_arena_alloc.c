@@ -449,9 +449,6 @@ builder_free (struct builder *b)
  * SECTION: Tests
  ******************************************************************************/
 
-/// Settings the default constructors never produce, so the limit branches are
-/// reachable at all. Only the fields a test cares about are named; the rest
-/// stay at "no limit".
 static struct arena_alloc_settings
 test_settings (struct i_mem mem)
 {
@@ -466,10 +463,6 @@ test_settings (struct i_mem mem)
   };
 }
 
-/// Each row is a limit the arena advertises and the request that trips it.
-/// Every one must come back NULL with ERR_NOMEM and leave the arena usable -
-/// a failed allocation is not allowed to corrupt the chunk chain, which
-/// DBG_ASSERT(arena_alloc) checks on the next call.
 TEST (arena_malloc_refuses_past_its_limits)
 {
   TEST_CASE ("req * size overflows u32")
@@ -588,10 +581,6 @@ TEST_DISABLED (arena_malloc_respects_max_chunks)
   arena_alloc_free_all (&a);
 }
 
-/// Invariant, for any settings: the chunk an arena picks must be big enough
-/// for the allocation that asked for it, at least min_chunk_size, and - when
-/// max_chunk_size is set and large enough to matter - no bigger than it.
-/// Those three clamps are applied in order, so the last one has to win.
 TEST (compute_new_chunk_size_clamps)
 {
   struct arena_alloc          a;
@@ -683,9 +672,6 @@ TEST (arena_alloc_copy)
   }
 }
 
-/// free_all is the only way back to the initial state, and the state it
-/// restores has to be the one arena_alloc_create left behind - otherwise an
-/// ALLOC_RESET leaves stale accounting.
 TEST (arena_alloc_free_all_resets_accounting)
 {
   struct arena_alloc a;

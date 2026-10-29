@@ -148,8 +148,9 @@ pgr_open (const char *dbname, struct i_mem mem, struct i_os os, error *e)
   if (lockt_init (lt, mem, os, e)) {
     fpgr_close (fp, e);
     wal_close_and_delete (ww, e);
+    // Nothing to destroy: lockt_init only fails with a NULL table, and its
+    // slab allocator has yet to hand anything out.
     mem.table->free (mem.self, lt);
-    lockt_destroy (lt);
     return NULL;
   }
 
@@ -287,6 +288,7 @@ failed:
   }
   if (lt) {
     lockt_destroy (lt);
+    mem.table->free (mem.self, lt);
   }
 
   return NULL;

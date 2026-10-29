@@ -101,7 +101,7 @@ struct blen_ctx
 };
 
 static err_t
-ns_rope_dl_blen_consumer (struct data_list dl, void *_ctx, error *e)
+ns_rope_dl_blen_consumer (struct data_list dl, void *_ctx, MAYBE_UNUSED error *e)
 {
   struct blen_ctx *ctx = _ctx;
   ctx->running_total += dl.dlen;
@@ -151,7 +151,7 @@ struct npages_ctx
 };
 
 static err_t
-ns_rope_dl_npages_consumer (struct data_list dl, void *_ctx, error *e)
+ns_rope_dl_npages_consumer (MAYBE_UNUSED struct data_list dl, void *_ctx, MAYBE_UNUSED error *e)
 {
   struct blen_ctx *ctx = _ctx;
   ctx->running_total += 1;
@@ -194,7 +194,7 @@ struct dl_fill_ctx
 };
 
 static err_t
-dl_fill (page *cur, void *_c, bool *done, error *e)
+dl_fill (page *cur, void *_c, bool *done, MAYBE_UNUSED error *e)
 {
   struct dl_fill_ctx *c     = _c;
   const p_size        avail = dl_avail (cur);

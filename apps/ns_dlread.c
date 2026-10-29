@@ -48,7 +48,7 @@ print_usage (FILE *out, const char *prog)
   );
 }
 
-static void
+MAYBE_UNUSED static void
 dl_contents_one_page (FILE *out, const page_h *cur)
 {
   fprintf (stderr, "============================= %" PRpgno "\n", page_h_pgno (cur));
@@ -77,7 +77,7 @@ dl_contents_one_page (FILE *out, const page_h *cur)
 }
 
 static void
-dl_contents (FILE *out, const char *fname, const pgno pg)
+dl_contents (MAYBE_UNUSED FILE *out, const char *fname, MAYBE_UNUSED const pgno pg)
 {
   error       e = error_create ();
 
@@ -93,6 +93,13 @@ dl_contents (FILE *out, const char *fname, const pgno pg)
     system_os_free (os);
     return;
   }
+
+  // TODO: walk the chain from [pg] and print it to [out] with
+  // dl_contents_one_page.
+  if (pgr_close (p, &e)) {
+    error_log_consume (&e);
+  }
+  system_os_free (os);
 }
 
 int

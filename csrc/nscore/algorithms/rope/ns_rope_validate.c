@@ -55,7 +55,7 @@ ns_rope_validate (struct pager *p, pgno root, error *e)
     return error_trace (e);
   }
 
-  if (blen != stats.tracked) {
+  if ((b_size)blen != stats.tracked) {
     return error_causef (
         e,
         ERR_CORRUPT,

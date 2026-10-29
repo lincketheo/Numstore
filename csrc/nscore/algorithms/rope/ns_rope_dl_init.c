@@ -83,7 +83,12 @@ failed:
 }
 
 spgno
-ns_rope_dl_init_from (struct pager *p, void *data, b_size dlen, error *e)
+ns_rope_dl_init_from (
+    MAYBE_UNUSED struct pager *p,
+    MAYBE_UNUSED void         *data,
+    MAYBE_UNUSED b_size        dlen,
+    error                     *e
+)
 {
   return error_causef (e, ERR_INVALID_ARGUMENT, "Unimplemented");
 }

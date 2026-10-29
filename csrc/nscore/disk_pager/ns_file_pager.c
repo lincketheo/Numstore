@@ -107,9 +107,11 @@ fpgr_open (const char *dbname, struct i_mem mem, struct i_os os, u32 header_len,
 
 fp_failed:
   os.table->close_file (os.self, dest->f.self, e);
-  mem.table->free (mem.self, dest);
 
+// Reached before the file is open, so there is nothing to close -- but [dest]
+// is already allocated either way.
 failed:
+  mem.table->free (mem.self, dest);
   return NULL;
 }
 

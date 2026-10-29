@@ -252,7 +252,7 @@ struct nsdb_var_t_visit_ctx
 };
 
 static err_t
-ns_visit_consumer (struct variable *_var, void *_ctx, error *e)
+ns_visit_consumer (struct variable *_var, void *_ctx, MAYBE_UNUSED error *e)
 {
   struct nsdb_var_t_visit_ctx *ctx = _ctx;
   struct nsdb_var              var = {
@@ -435,6 +435,9 @@ ns_malloc (nsdb_t *db, txn_t *txn, b_size *dlen, const char *fmt, ...)
     return NULL;
   }
 
+  // [ret] comes from the database, not from [temp], so the query buffer goes
+  // back here like it does on every other path.
+  ALLOC_CLOSE (temp);
   return ret;
 }
 

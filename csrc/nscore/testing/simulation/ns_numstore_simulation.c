@@ -281,8 +281,8 @@ nss_validate_variables (struct ns_simulation *meta, error *e)
 static err_t
 nss_validate_after_write (
     struct ns_simulation *meta,
-    b_size                effected_start,
-    b_size                effected_nelems,
+    MAYBE_UNUSED b_size   effected_start,
+    MAYBE_UNUSED b_size   effected_nelems,
     u8                   *db_buf,
     u8                   *ref_buf,
     b_size                buf_size,
