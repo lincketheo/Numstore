@@ -1,0 +1,86 @@
+name: Source Tarball
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to package (e.g. v1.5.0)
+        required: true
+
+# gh release create/upload writes to the repo's releases.
+permissions:
+  contents: write
+
+concurrency:
+  group: source-tarball-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  MAIN_BRANCH: develop
+
+jobs:
+  tarball:
+    name: tar.gz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # Need the branch histories to prove the tag sits on the main branch.
+          fetch-depth: 0
+
+      - name: Require the tag to be on ${{ env.MAIN_BRANCH }}
+        run: |
+          # A tag push carries no branch, so check containment instead:
+          # is the tagged commit an ancestor of (or equal to) the branch tip?
+          if ! git merge-base --is-ancestor HEAD "origin/$MAIN_BRANCH"; then
+            echo "tag is not on $MAIN_BRANCH - refusing to publish" >&2
+            exit 1
+          fi
+
+      - name: Build the tarball
+        id: pack
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+
+          # version.txt is the single source of truth - refuse to ship a
+          # tarball whose name disagrees with the tree inside it.
+          actual="$(tr -d '[:space:]' < version.txt)"
+          if [ "$version" != "$actual" ]; then
+            echo "tag $tag does not match version.txt ($actual)" >&2
+            exit 1
+          fi
+
+          name="numstore-${version}"
+
+          # git archive exports the tracked tree only: no .git, no build
+          # dirs, no untracked junk. It honours export-ignore if a
+          # .gitattributes ever adds one.
+          git archive --format=tar.gz --prefix="${name}/" -o "${name}.tar.gz" HEAD
+
+          sha256sum "${name}.tar.gz" | tee "${name}.tar.gz.sha256"
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "file=${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.pack.outputs.tag }}"
+          file="${{ steps.pack.outputs.file }}"
+
+          # The tag push may land before any release exists for it.
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --title "$tag" --generate-notes
+
+          # --clobber so a re-run replaces the asset instead of failing.
+          gh release upload "$tag" "$file" "$file.sha256" --clobber
