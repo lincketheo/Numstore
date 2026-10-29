@@ -999,7 +999,8 @@ vignettes/*.pdf
 .Renviron
 
 # pkgdown site
-docs/
+# Disabled: in this project docs/ is hand written source, not a generated site.
+# docs/
 
 # translation temp files
 po/*~

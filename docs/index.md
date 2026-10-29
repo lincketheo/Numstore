@@ -1,3 +1,21 @@
+Numstore Documentation
+======================
+
+This page is the guided tour: it starts from `pip install` and walks the whole
+query language and type system in Python. The two reference pages are:
+
+* [**Python API Reference**](python_api.md) - every class and method in
+  `pynumstore`, with signatures, return values and errors.
+* [**C API Reference**](c_api.md) - `numstore.h`, how to link it, and a complete
+  program per operation.
+
+Runnable versions of everything here live in
+[`samples/`](../samples): [`sample1_basic.py`](../samples/sample1_basic.py),
+[`sample2_datatypes.py`](../samples/sample2_datatypes.py),
+[`sample3_transactions.py`](../samples/sample3_transactions.py),
+[`sample4_crash.py`](../samples/sample4_crash.py) and
+[`sample5_errors.py`](../samples/sample5_errors.py).
+
 Table of Contents
 =================
 
@@ -6,14 +24,32 @@ Table of Contents
 * [Getting started](#getting-started)
 * [A tour of the language](#a-tour-of-the-language)
   * [Variable Operations](#variable-operations)
+    * [Listing every variable](#listing-every-variable)
   * [Array Operations](#array-operations)
     * [Insert](#insert)
+      * [Count is a ceiling](#count-is-a-ceiling)
     * [Write](#write)
+      * [Ranges clamp](#ranges-clamp)
+      * [A bare index](#a-bare-index)
     * [Read](#read)
     * [Remove](#remove)
   * [Transactions](#transactions)
+    * [One transaction at a time](#one-transaction-at-a-time)
+  * [Durability and crash recovery](#durability-and-crash-recovery)
   * [The Numstore Type System](#the-numstore-type-system)
+    * [Primitives](#primitives)
+    * [Structs](#structs)
+    * [Unions](#unions)
+    * [Strict Arrays](#strict-arrays)
+      * [Array ordering (C order)](#array-ordering-c-order)
+    * [Combining Types](#combining-types)
+    * [Practice Problems](#practice-problems)
   * [Data Inputs and Outputs](#data-inputs-and-outputs)
+    * [Getting data out](#getting-data-out)
+    * [Putting data in](#putting-data-in)
+    * [Shapes](#shapes)
+    * [Reusing a query](#reusing-a-query)
+* [Where to next](#where-to-next)
 
 What is Numstore?
 =================
@@ -142,6 +178,7 @@ or data out:
 |----------------------|---------------------------|---------------------------------|
 | `db.execute(q)`      | `CREATE` `DELETE` `REMOVE`| `None`                          |
 | `db.get(q)`          | Anything with a variable  | a `Var` (metadata)              |
+| `db.get_all()`       | takes no query            | `list[Var]`, one per variable   |
 | `db.write(q, data)`  | `INSERT` `WRITE`          | `int` - elements written        |
 | `db.read(q)`         | `READ` `REMOVE`           | a fresh `numpy` array           |
 | `db.read_into(q, o)` | `READ` `REMOVE`           | `int` - elements read into `o`  |
@@ -171,7 +208,7 @@ Variable Operations
 map of "variables" to "arrays".
 
 A Numstore database may look like this:
-```
+```text
 "foo"  ->  [1, 2, 3, 4, 5, ...]
 "bar"  ->  [1, 3, 8, 9, 10, ...]
 "biz"  ->  [3, 6, 7, 8, 9, ...]
@@ -262,6 +299,19 @@ Traceback (most recent call last):
 RuntimeError: Variable: biz doesn't exist
 ```
 
+### Listing every variable
+
+`db.get_all` is `get` for the whole database: it takes no query and hands back
+one `Var` per variable. It's how you find out what's in a database file you
+didn't create. The order isn't specified, so sort if you need a stable list:
+
+```python
+>>> sorted(v.name for v in db.get_all())
+['bar', 'foo']
+>>> {v.name: v.type for v in sorted(db.get_all(), key=lambda v: v.name)}
+{'bar': 'f32', 'foo': 'u32'}
+```
+
 Array Operations
 ----------------
 
@@ -292,7 +342,7 @@ array([1, 2, 3, 4, 5], dtype=uint32)
 
 The general form of an insert command looks like this:
 
-```
+```text
 insert <Variable Name> <Offset> <Count>
 ```
 
@@ -307,7 +357,7 @@ The return value is the number of elements actually inserted.
 For example, if we insert into a 6 element array at index 2, it's like we're
 "pushing" data into index 2:
 
-```
+```text
 insert foo 2 3   <- [7, 8, 9]
 
 Before:
@@ -319,7 +369,7 @@ After:
   [1, 2, 7, 8, 9, 3, 4, 5, 6]
 ```
 
-```
+```text
 insert foo 0 3   <- [7, 8, 9]
 
 Before:
@@ -331,7 +381,7 @@ After:
   [7, 8, 9, 1, 2, 3, 4, 5, 6]
 ```
 
-```
+```text
 insert foo -1 3  <- [7, 8, 9]
 
 Before:
@@ -403,7 +453,7 @@ array([ 1,  2, 70, 80, 90,  6], dtype=uint32)
 
 The general form of a write command looks like this:
 
-```
+```text
 write <Variable Name>[ "[" ( index
       | [ start ] ":" [ stop ] [ ":" [ step ] ]
       ) "]" ]
@@ -436,7 +486,7 @@ thing:
 
 Nothing moves, and the array is the same length afterwards:
 
-```
+```text
 write foo[2:5]  <- [7, 8, 9]
 Before:
   [1, 2, 3, 4, 5, 6]
@@ -453,7 +503,7 @@ leaves you with a 9 element array. If you want to grow an array, you want
 A _step_ spreads the write out over the array instead of laying it down
 contiguously:
 
-```
+```text
 write foo[0:6:2]  <- [7, 8, 9]
 Before:
   [1, 2, 3, 4, 5, 6]
@@ -589,7 +639,7 @@ array([3, 4, 5], dtype=uint32)
 
 The general form of a read command looks like this:
 
-```
+```text
 read <Variable Name>[ "[" ( index
      | [ start ] ":" [ stop ] [ ":" [ step ] ]
      ) "]" ]
@@ -615,7 +665,7 @@ array([1, 2, 3, 4, 5, 6], dtype=uint32)
 
 Reading never modifies the array:
 
-```
+```text
 read foo[2:5]
 
 Before:
@@ -632,7 +682,7 @@ After:
 A _step_ spreads the read out over the array, the same way it spreads out a
 write:
 
-```
+```text
 read foo[0:6:2]
 
 Before:
@@ -701,7 +751,7 @@ array([1, 2, 6], dtype=uint32)
 
 The general form of a remove command looks like this:
 
-```
+```text
 remove <Variable Name>[ "[" ( index
        | [ start ] ":" [ stop ] [ ":" [ step ] ]
        ) "]" ]
@@ -744,7 +794,7 @@ array([1, 2, 6], dtype=uint32)
 For example, removing the range `2:5` from a 6 element array takes out three
 elements and leaves a 3 element array behind:
 
-```
+```text
 remove foo[2:5]
 
 Before:
@@ -758,7 +808,7 @@ After:
 A _step_ punches holes in the array instead of taking out one contiguous block.
 The array still closes up afterwards:
 
-```
+```text
 remove foo[0:6:2]
 
 Before:
@@ -779,7 +829,7 @@ Because the whole range is optional, the following commands all remove
 everything. This empties the variable out, it doesn't get rid of the variable
 itself - you're left with an array of length 0:
 
-```
+```text
 remove foo
 
 Before:
@@ -885,6 +935,89 @@ something went wrong
 >>> db.read("read prices")
 array([1.5 , 2.25, 3.75, 4.  , 5.  ])
 ```
+
+### One transaction at a time
+
+Numstore serializes transactions strictly: one transaction is open at a time per
+database handle, and `begin()` waits for the open one to finish before it
+returns. That is what makes transactions strictly serializable - the schedule is
+the order they commit in, and there is no interleaving to reason about.
+
+So finish each transaction before you open the next one. Calling `db.begin()`
+while another transaction is still open means waiting forever on a transaction
+only you can finish.
+
+The same is true of two threads sharing one `Database`: the waiting `begin()`
+does not currently release the GIL, so the thread holding the transaction never
+gets to commit it. And opening the same file twice is not a way around it -
+both handles open, but the second doesn't see the first's commits.
+
+One handle per file, one transaction in flight, start to finish. Concurrent
+readers and writers across threads and processes are in development; see
+[Concurrency and threading](python_api.md#concurrency-and-threading) for what
+holds today.
+
+Durability and crash recovery
+-----------------------------
+
+`commit()` is the durability point. When it returns, the data is on disk and a
+crash cannot take it back. `db.close()` is still worth calling on a clean exit,
+but it isn't what makes committed data durable.
+
+Numstore writes ahead to a log and recovers with ARIES on the next open: work
+from a committed transaction is redone, work from a transaction that never
+committed is undone. There is no third outcome, which is the whole point - no
+state exists where half of a transaction is visible.
+
+[`samples/sample4_crash.py`](../samples/sample4_crash.py) demonstrates this with
+real process crashes. It forks a child per phase and kills it with
+`os._exit(1)`, which gives the library no chance to flush or clean up:
+
+```sh
+python samples/sample4_crash.py
+```
+
+```text
+full contents: 'AAABBAAAAAAA'
+phase 2 - commit + crash      (expect BB): 'BB'
+phase 3 - no commit + crash   (expect AA): 'AA'
+```
+
+The three phases are:
+
+1. Insert ten `A` bytes and close cleanly. This is the baseline.
+2. Insert `BB` at offset 3, **commit**, then crash. The commit happened, so the
+   log is replayed on the next open and `BB` is there.
+3. Insert `CC` at offset 7 and crash **without committing**. That work is undone
+   on the next open, so those bytes still read `AA` - and the array is 12
+   elements, not 14.
+
+### What's on disk
+
+A database is one file, plus a log next to it while there is work to recover:
+
+```text
+prices.db        the database
+prices.db.wal    the write-ahead log
+```
+
+After a clean close you are left with just the database file. After a crash the
+log is still there, and the next `ns.Database("prices.db")` replays it before
+your first query runs - recovery is automatic and needs no flag. To back up a
+database, copy both files, or copy the database file while nothing has it open.
+
+One surprise worth knowing about: the database file is **sparse**. A database
+holding three numbers reports a size of about 128 MiB but occupies around 32 KiB
+of actual disk:
+
+```sh
+ls -l prices.db    # 133791768 bytes
+du -h prices.db    #  32K
+```
+
+That is preallocated address space, not data. Tools that understand holes
+(`du`, `rsync -S`, `cp` on Linux and macOS) see the real size; tools that don't
+will inflate the copy to the full apparent size.
 
 The Numstore Type System
 ------------------------
@@ -1086,7 +1219,7 @@ In the following example:
 
 `u` is a variable whose elements as bytes in memory look like:
 
-```
+```text
 a -> [ 4 byte int ]
 b -> [      16 byte complex float      ]
      ^-- both members start at the same byte --^
@@ -1159,7 +1292,7 @@ dimension is contiguous in memory** and the first dimension has the largest
 stride. The last index varies fastest as you walk through memory.
 
 For a small `[2][3] u8`, memory looks like:
-```
+```text
 [ (0,0) ][ (0,1) ][ (0,2) ][ (1,0) ][ (1,1) ][ (1,2) ]
 ```
 Notice the second index (the column) races from 0->2 before the first index
@@ -1430,3 +1563,21 @@ Traceback (most recent call last):
   ...
 RuntimeError: database is closed
 ```
+
+Where to next
+-------------
+
+* [**Python API Reference**](python_api.md) - `Database`, `Transaction`, `Plan`,
+  `Var` and `to_dtype`, with every signature, return value and error.
+* [**C API Reference**](c_api.md) - link `libnumstore.a`, then a complete C
+  program per operation: queries, transactions, crash recovery, packed structs,
+  prepared plans and smart files.
+* [**samples/**](../samples) - the same material as scripts you can run:
+  [`sample1_basic.py`](../samples/sample1_basic.py) for CRUD,
+  [`sample2_datatypes.py`](../samples/sample2_datatypes.py) for the type system,
+  [`sample3_transactions.py`](../samples/sample3_transactions.py) for
+  transactions, [`sample4_crash.py`](../samples/sample4_crash.py) for
+  durability, and [`sample5_errors.py`](../samples/sample5_errors.py) for error
+  handling.
+* [**README**](../README.md) - what Numstore is for, and how to build it from
+  source.

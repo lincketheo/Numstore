@@ -8,14 +8,20 @@ Features:
 - **Single File.** The whole database lives in a single file. There is no
   server - see `include/numstore.h`
 - **ACID.** Every insert, write and remove either happens completely or not at
-  all, even if the process crashes partway through. It uses ARIES for crash
-  recovery and a unique rope variant of the B+Tree to index into arrays.
+  all, even if the process crashes partway through. Transactions are strictly
+  serializable - one is open at a time - and crash recovery uses ARIES over a
+  unique rope variant of the B+Tree to index into arrays. Concurrent readers and
+  writers are in development.
 - **Arrays.** Numstore stores images, sensor streams, tick data and any fixed
   layout of numbers you can describe as a type.
 - **No dependencies.** Written in C11 with first class Python bindings that
   return numpy arrays.
 
 Pynumstore is the easiest way to get started:
+
+```sh
+pip install pynumstore
+```
 
 ```python
 import numpy as np
@@ -32,7 +38,9 @@ with ns.Database("prices.db") as db:
     print(db.read("read prices[0::2]")) # [1.5  3.75 5.  ]
 ```
 
-You'll need Python 3.9+, a C11 compiler and CMake 3.20+.
+The wheel brings numpy and nothing else. To build the bindings from source
+instead - which is what you want if you're working on Numstore itself - you'll
+need Python 3.9+, a C11 compiler and CMake 3.20+:
 
 ```sh
 git clone https://github.com/NumstoreDB/Numstore
@@ -42,10 +50,17 @@ pip install .
 python samples/sample1_basic.py
 ```
 
-`pip install` compiles the C library and the bindings in one step. The sample
+`pip install .` compiles the C library and the bindings in one step. The sample
 creates a database file in your current directory.
 
-For C - Jump to the [C Quick Start](#c-quick-start).
+Next steps:
+
+* [**Documentation**](docs/index.md) - the guided tour: the query language, the
+  type system, transactions and durability, all in Python.
+* [**Python API Reference**](docs/python_api.md) - every class and method in
+  `pynumstore`.
+* [**C API Reference**](docs/c_api.md) - `numstore.h`, linking, and a complete
+  program per operation. Also see the [C Quick Start](#c-quick-start) below.
 
 Why Numstore?
 -------------
@@ -107,7 +122,8 @@ You work with variables through short queries:
 They nest freely: `struct { a u32, b struct { c f16, d [10]f32 } }` is 4 + 2 +
 40 = 46 bytes.
 
-More: [Documentation](docs/index.md)
+The full rules for sizing and nesting types are in
+[the type system](docs/index.md#the-numstore-type-system).
 
 C Quick Start
 -------------
@@ -124,9 +140,20 @@ What you get:
 
 * `include/numstore.h`: the only header you need
 * `build/release/lib/libnumstore.a`: the whole library in one static archive
-* `build/release/bin/`: one binary per sample in `samples/`, plus `ns_simtest`
+* `build/release/bin/`: one binary per C sample in `samples/`, plus `ns_simtest`
 
-For a debug build, use `-B build/debug -DCMAKE_BUILD_TYPE=Debug` instead.
+To compile a program of your own against it:
+
+```sh
+cc -std=c11 -I include myprog.c build/release/lib/libnumstore.a -o myprog
+```
+
+On Linux add `-pthread -lm`. For a debug build, use
+`-B build/debug -DCMAKE_BUILD_TYPE=Debug` instead.
+
+The [C API Reference](docs/c_api.md) has the rest: linking from CMake, and a
+complete program for queries, transactions, crash recovery, packed structs,
+prepared plans and smart files.
 
 Developing
 ----------
@@ -134,17 +161,25 @@ Developing
 One `CMakeLists.txt` builds everything, and `make` wraps the cmake invocations
 so the flags live in one place:
 
-| Target            | What it does                                     |
-| ----------------- | ------------------------------------------------ |
-| `make debug`      | debug build into `build/debug`                   |
-| `make release`    | release build into `build/release`               |
-| `make ci-debug`   | debug build, then run `unit_tests`               |
-| `make ci-simtest` | debug build, then run `ns_simtest` for 5 seconds |
-| `make coverage`   | gcovr HTML report into `build/coverage/html`     |
-| `make format`     | clang-format, gersemi and ruff over the tree     |
-| `make clean`      | remove build artifacts                           |
+| Target                 | What it does                                        |
+| ---------------------- | --------------------------------------------------- |
+| `make debug`           | debug build into `build/debug` (the default target) |
+| `make release`         | release build into `build/release`                  |
+| `make release-package` | release build, then `cmake --install` into `build/release/package` |
+| `make test`            | `test-unit`, then `test-simtest`                    |
+| `make test-unit`       | debug build, then `unit_tests` with a random seed   |
+| `make test-simtest`    | debug build, then `ns_simtest` for 50 seconds       |
+| `make test-python`     | pip install the package, then run `pytest`          |
+| `make wheel`           | build a wheel into `dist/` (`make sdist` for a tarball) |
+| `make coverage`        | gcovr HTML report into `build/coverage/html`        |
+| `make valgrind`        | `unit_tests` and `ns_simtest` under valgrind        |
+| `make leaks`           | the same two under macOS `leaks`                    |
+| `make format`          | clang-format, gersemi and ruff over the tree        |
+| `make clean`           | remove build artifacts                              |
 
-`coverage` needs gcovr, and `format` needs clang-format, gersemi and ruff.
+`coverage` needs gcovr, `format` needs clang-format, gersemi and ruff, and
+`valgrind` and `leaks` need the tool they're named after. CI runs `make
+test-unit` and `make release-package` on every push.
 
 `unit_tests` takes a seed and an optional name filter, so
 `./build/debug/bin/unit_tests 123142 wal` runs only the tests whose name
