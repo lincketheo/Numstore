@@ -63,8 +63,7 @@ void test_ctx_free (struct test_ctx *ctx);
 
 #  define TEST_BODY_DECL(name) static void __test_body__##name (struct test_ctx *ctx);
 
-// Not every test needs the fixture, and -Wextra -Werror (the memcheck build)
-// rejects the ones that ignore it.
+// -Wextra -Werror (the memcheck build) rejects a body that ignores ctx.
 #  define TEST_BODY_IMPL(name) static void __test_body__##name (MAYBE_UNUSED struct test_ctx *ctx)
 
 #  define TEST_NOOP(name) \

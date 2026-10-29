@@ -144,9 +144,9 @@ dl_init_test_fn (page *cur, void *_c, bool *done, error *e)
 }
 
 /// Walks the chain from [root] and checks it is a well formed doubly linked
-/// list holding exactly [expect] - forward links, backward links and content
-/// all have to agree, since dl_init writes next on one page and prev on the
-/// next and a swapped pair would still scan forward correctly.
+/// list holding exactly [expect]. dl_init writes next on one page and prev on
+/// the next, so a swapped pair still scans forward correctly - the backward
+/// links have to be checked too.
 static void
 assert_chain_is (
     struct pager *p,
@@ -307,9 +307,7 @@ TEST (ns_rope_dl_init_initializer_failure)
   DL_INIT_FAILURE_CASE (2, 2);
 }
 
-/// Unimplemented, and callers have to be told rather than handed a page
-/// number. This pins the contract so the stub cannot quietly start returning
-/// a bogus pgno.
+/// Unimplemented: callers have to be told, not handed a page number.
 TEST (ns_rope_dl_init_from_is_unimplemented)
 {
   struct pgr_fixture f;

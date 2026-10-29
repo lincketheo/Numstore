@@ -888,10 +888,9 @@ TEST (dvalidtr_random_test_reports_a_broken_sut)
 /******************************************************************************
  * SECTION: Failure reporting
  * ----------------------------------------------------------------------------
- * The validator is the oracle the simulation tests trust, so the branches that
- * matter most are the ones that report a disagreement. [dv_stub] is a
- * data_writer over an ext_array that can be told to refuse an operation, or to
- * lie about how much it moved, so either side can be broken on purpose.
+ * [dv_stub] is a data_writer over an ext_array that can refuse an operation or
+ * lie about how much it moved, so either side of the validator can be broken
+ * on purpose.
  *
  * error_causef only records a cause when the error is still clean, so a writer
  * that refused with ERR_IO keeps that code and the validator's ERR_CORRUPT is

@@ -148,8 +148,6 @@ pgr_open (const char *dbname, struct i_mem mem, struct i_os os, error *e)
   if (lockt_init (lt, mem, os, e)) {
     fpgr_close (fp, e);
     wal_close_and_delete (ww, e);
-    // Nothing to destroy: lockt_init only fails with a NULL table, and its
-    // slab allocator has yet to hand anything out.
     mem.table->free (mem.self, lt);
     return NULL;
   }
@@ -340,9 +338,7 @@ TEST (pager_open)
 // transaction table and a checkpoint task, in that order. Failing the Nth
 // allocation walks the unwind block one resource at a time.
 //
-// The invariant is the same for every budget: either a usable pager comes
-// back, or NULL with the error set and every resource already released.
-// test_ctx_free is the second half of the assertion -- it fails the test if the
+// test_ctx_free is the other half of the assertion: it fails the test if the
 // unwind left a file open or a thread unjoined.
 // DISABLED: budget 3 lands inside wal_init and aborts the process on a double
 // free, so the sweep cannot run past it.
@@ -437,9 +433,8 @@ pgr_write_raw_header (struct i_os os, lsn lsn0, bool lsn0valid, lsn lsn1, bool l
   os.table->close_file (os.self, f.self, e);
 }
 
-// The seeded wal below starts at lsn 0, so a trustworthy header lsn is also an
-// agreeing one only when it is 0. The last row is the control: without it the
-// rest would still pass if pgr_open rejected every existing database.
+// The seeded wal below starts at lsn 0, so a trustworthy header lsn agrees
+// only when it is 0 too. The last row is the control: that one must open.
 static struct
 {
   const char *name;
@@ -457,14 +452,10 @@ static struct
 
 TEST (pgr_open_rejects_a_corrupt_header)
 {
-  // Leaves testdb on disk with one committed page and a live wal, which is
-  // what the header checks under test need:
-  //
-  //   - a db file longer than its header, or fpgr_open flags it FP_ISNEW again
-  //     (an empty db is exactly PAGE_HEADER_LEN long) and pgr_open rewrites
-  //     the header instead of reading it
-  //   - a wal to compare that header against, so pgr_crash and not pgr_close,
-  //     which deletes the wal on the way out
+  // Leaves testdb on disk with one committed page and a live wal. An empty db
+  // is exactly PAGE_HEADER_LEN long, which fpgr_open flags FP_ISNEW, and
+  // pgr_close deletes the wal -- so a page is committed and the seed crashes
+  // rather than closing.
 #  define seed_existing_db()                                                 \
     do {                                                                     \
       test_fail_if (pgr_delete_single_file ("testdb", ctx->os, &ctx->e));    \

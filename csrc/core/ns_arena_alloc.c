@@ -475,7 +475,6 @@ TEST (arena_malloc_refuses_past_its_limits)
     test_assert_int_equal (ctx->e.cause_code, ERR_NOMEM);
     error_reset (&ctx->e);
 
-    // Still usable.
     test_assert (arena_malloc (&a, 1, 8, &ctx->e) != NULL);
     arena_alloc_free_all (&a);
   }
@@ -505,7 +504,6 @@ TEST (arena_malloc_refuses_past_its_limits)
     st.max_total_size              = 32;
     arena_alloc_create (&a, st);
 
-    // First chunk fits the budget exactly; the second cannot be created.
     test_assert (arena_malloc (&a, 8, 1, &ctx->e) != NULL);
     test_assert_int_equal (a.total_allocated, 32);
 
@@ -513,7 +511,6 @@ TEST (arena_malloc_refuses_past_its_limits)
     test_assert_int_equal (ctx->e.cause_code, ERR_NOMEM);
     error_reset (&ctx->e);
 
-    // Nothing was allocated, so the accounting must not have moved.
     test_assert_int_equal (a.num_chunks, 1);
     test_assert_int_equal (a.total_allocated, 32);
     arena_alloc_free_all (&a);
@@ -542,21 +539,16 @@ TEST (arena_malloc_refuses_past_its_limits)
   }
 }
 
-/// max_chunks = N should mean "N chunks, then refuse", and refusing is what
-/// arena_alloc_add_new_chunk does: it errors once num_chunks >= max_chunks.
+/// max_chunks = N should mean "N chunks, then refuse". Three sites disagree on
+/// whether the bound is inclusive:
 ///
-/// Disabled because that state is one the invariant rejects, so the branch
-/// cannot be reached without aborting first. Three sites disagree on whether
-/// the bound is inclusive:
+///   :160  ASSERT (num_chunks <  max_chunks)   exclusive
+///   :173  ASSERT (counted    <= max_chunks)   inclusive
+///   :319  if     (num_chunks >= max_chunks)   inclusive
 ///
-///   ns_arena_alloc.c:160  ASSERT (num_chunks   <  max_chunks)   exclusive
-///   ns_arena_alloc.c:173  ASSERT (counted      <= max_chunks)   inclusive
-///   ns_arena_alloc.c:319  if     (num_chunks   >= max_chunks)   inclusive
-///
-/// With max_chunks = N, allocating the Nth chunk is allowed by 319 and
-/// counted as fine by 173, but trips 160 on the next DBG_ASSERT - so any
-/// non-zero max_chunks aborts a debug build as soon as the arena actually
-/// uses its full budget. Fix: make 160 inclusive to match the other two.
+/// Allocating the Nth chunk passes 319 and 173, then trips 160 on the next
+/// DBG_ASSERT, so any non-zero max_chunks aborts once the budget is really
+/// used. Fix: make 160 inclusive.
 TEST_DISABLED (arena_malloc_respects_max_chunks)
 {
   struct arena_alloc          a;
@@ -638,8 +630,6 @@ TEST (compute_new_chunk_size_clamps)
   }
 }
 
-/// arena_alloc_copy is arena_malloc plus a memcpy, so it has exactly two
-/// outcomes and must not memcpy into the failed one.
 TEST (arena_alloc_copy)
 {
   TEST_CASE ("copies the bytes")
@@ -690,7 +680,6 @@ TEST (arena_alloc_free_all_resets_accounting)
   test_assert_int_equal (a.total_allocated, 0);
   test_assert_int_equal (a.total_used, 0);
 
-  // Reusable without re-creating.
   test_assert (arena_malloc (&a, 1, 8, &ctx->e) != NULL);
   arena_alloc_free_all (&a);
 }

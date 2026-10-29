@@ -435,8 +435,7 @@ ns_malloc (nsdb_t *db, txn_t *txn, b_size *dlen, const char *fmt, ...)
     return NULL;
   }
 
-  // [ret] comes from the database, not from [temp], so the query buffer goes
-  // back here like it does on every other path.
+  // [ret] comes from the database, not from [temp].
   ALLOC_CLOSE (temp);
   return ret;
 }

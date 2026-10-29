@@ -191,10 +191,9 @@ TEST (periodic_task_init_unwinds_on_os_failure)
   }
 }
 
-/// The lifecycle an caller actually drives: init -> start -> (fn runs on the
-/// timer) -> stop. stop has to be the point where the worker is already
-/// parked on done_cond, so joining cannot hang and fn cannot run again
-/// afterwards.
+/// init -> start -> (fn runs on the timer) -> stop. By the time stop returns
+/// the worker is parked on done_cond, so joining cannot hang and fn cannot run
+/// again.
 TEST (periodic_task_start_stop)
 {
   struct periodic_task  t;

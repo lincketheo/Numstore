@@ -225,8 +225,6 @@ TEST (default_mem_allocates)
   }
 }
 
-/// The faulty decorator is the only way a test can make an allocation fail on
-/// demand, so its budget has to land on the call the test aimed at.
 TEST (faulty_mem_fail_after_budget)
 {
   struct i_mem f = ctx->faulty_mem;

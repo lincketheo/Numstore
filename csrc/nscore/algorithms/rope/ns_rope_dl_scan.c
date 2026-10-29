@@ -268,11 +268,9 @@ dl_record (struct data_list dl, void *_c, error *e)
   return SUCCESS;
 }
 
-/// A forward scan has to visit every page of the chain exactly once, in order,
-/// starting at the page it was handed. The link fields each page reports must
-/// chain up with its neighbours - the scan follows npg, so a scan that agreed
-/// with itself but disagreed with ppg would still look right from the counts
-/// alone.
+/// A forward scan visits every page of the chain exactly once, in order,
+/// starting at the page it was handed. The scan follows npg, so ppg is checked
+/// against each neighbour too - counts alone cannot tell the two apart.
 ///
 /// Each row is a chain length: 1 page (the degenerate chain, npg == PGNO_NULL
 /// on the only page), 2 (the first real link) and 6 (several hops).
@@ -317,9 +315,9 @@ TEST (ns_rope_dl_scan_pgno)
   }
 }
 
-/// blen and npages are both ns_rope_dl_scan with a different consumer, so the
-/// thing worth pinning is that they agree with the chain that was built - and
-/// that the page_h and pgno entry points agree with each other.
+/// blen and npages are both ns_rope_dl_scan with a different consumer. Both
+/// have to agree with the chain that was built, and the page_h and pgno entry
+/// points have to agree with each other.
 TEST (ns_rope_dl_scan_blen_and_npages)
 {
   struct pgr_fixture f;

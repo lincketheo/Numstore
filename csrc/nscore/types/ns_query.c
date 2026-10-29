@@ -195,11 +195,10 @@ test_compile (struct arena_alloc *alloc, const char *text, error *e)
   return q;
 }
 
-/// query_equal is the equivalence used to check the parser against itself, so
-/// it has to be a real equivalence: reflexive, and false the moment any field
-/// the type carries differs. The easiest way to get it wrong is to compare
-/// the payload without first comparing the tag, which would make two queries
-/// equal just because their union bytes happen to line up.
+/// query_equal checks the parser against itself, so it has to be a real
+/// equivalence: reflexive, and false the moment any field the type carries
+/// differs. Comparing the payload without first comparing the tag would make
+/// two queries equal whenever their union bytes happen to line up.
 TEST (query_equal)
 {
   ALLOC_INIT (alloc);
@@ -333,10 +332,10 @@ TEST (query_vname_of_interest)
   ALLOC_CLOSE (alloc);
 }
 
-/// fcompile is printf plus compile_query, and it sizes the buffer with a
-/// first vsnprintf pass. The second pass reuses the arg list, so a missing
-/// va_copy would read garbage on the write pass - which is why the formatted
-/// result, not just the return code, is what gets checked.
+/// fcompile is printf plus compile_query, and it sizes the buffer with a first
+/// vsnprintf pass. The second pass reuses the arg list, so a missing va_copy
+/// reads garbage on the write pass: the formatted result is checked, not just
+/// the return code.
 TEST (ns_query_fcompile)
 {
   TEST_CASE ("substitutes args and compiles the result")
