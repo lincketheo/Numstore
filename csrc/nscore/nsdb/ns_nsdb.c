@@ -1229,14 +1229,18 @@ nsdb_plan_console_create (struct nsdb_plan *plan, error *_e)
       &var,
       e
   );
-  ALLOC_CLOSE (alloc);
-
   if (ret < 0) {
+    ALLOC_CLOSE (alloc);
     nsdb_rollback (plan->parent, tx, e);
     return error_trace (e);
   }
 
+  // var.dtype points INTO alloc, so the arena has to outlive this print.
+  // Closing it first was a use-after-free: harmless where the freed bytes
+  // happen to survive, but MSVC's debug CRT fills them with 0xDD, which is
+  // what turned up as an invalid type header on Windows only.
   i_print_variable (&var, e);
+  ALLOC_CLOSE (alloc);
 
   if (nsdb_commit (plan->parent, tx, e) < 0) {
     return error_trace (e);
