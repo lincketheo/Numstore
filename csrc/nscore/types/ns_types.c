@@ -95,8 +95,10 @@ type_validate (const struct type *t, error *e)
       break;
     }
     default: {
-      UNREACHABLE (); // LCOV_EXCL_LINE
-      return 0;       // LCOV_EXCL_LINE
+      // Reachable from on-disk data: type_deserialize casts a stored byte
+      // straight to enum type_t, so a corrupt or truncated file lands here.
+      // Report it rather than killing the process.
+      return error_causef (e, ERR_CORRUPT, "Unknown type code: %d", (int)t->type);
     }
   }
 
@@ -739,7 +741,15 @@ type_deserialize (struct deserializer *src, struct arena_alloc *alloc, error *e)
   if (dest == NULL) {
     return NULL;
   }
-  bool ret   = dsrlizr_read (&header, sizeof (u8), src);
+  // A short read returns false WITHOUT touching header, so reading it anyway
+  // means reading uninitialized stack. That is zero on most platforms - and
+  // T_PRIM is 0, a perfectly valid type - but MSVC's /RTC1 fills it with
+  // 0xCC, which falls through to the default arm below. Hence Windows-only.
+  if (!dsrlizr_read (&header, sizeof (u8), src)) {
+    error_causef (e, ERR_CORRUPT, "Truncated type: no type code");
+    return NULL;
+  }
+
   dest->type = (enum type_t)header;
 
   switch (header) {
@@ -768,10 +778,9 @@ type_deserialize (struct deserializer *src, struct arena_alloc *alloc, error *e)
       return dest;
     }
     default: {
-      if (error_causef (e, ERR_INTERP, "Unknown type code: %d", (int)ret)) {
-        return NULL;
-      }
-      return dest;
+      // Was reporting `ret` (the bool from the read) instead of the code.
+      error_causef (e, ERR_INTERP, "Unknown type code: %d", (int)header);
+      return NULL;
     }
   }
 }
