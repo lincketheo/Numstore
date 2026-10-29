@@ -5,9 +5,11 @@ on:
     branches: [develop]
   pull_request:
   workflow_dispatch:
+  # release.yml calls this to build the artifacts it publishes.
+  workflow_call:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: wheels-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -45,4 +47,25 @@ jobs:
         with:
           name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: ./wheelhouse/*.whl
+          if-no-files-found: error
+
+  # The source distribution: `pip install pynumstore` falls back to this, and
+  # the release attaches it.
+  build-sdist:
+    name: sdist
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sdist
+        run: pipx run build --sdist
+
+      - name: Check metadata
+        run: pipx run twine check dist/*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cibw-sdist
+          path: ./dist/*.tar.gz
           if-no-files-found: error

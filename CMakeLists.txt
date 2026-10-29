@@ -4,7 +4,15 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/version.txt" NUMSTORE_VERSION)
 string(STRIP "${NUMSTORE_VERSION}" NUMSTORE_VERSION)
 string(REGEX REPLACE "^v" "" NUMSTORE_VERSION "${NUMSTORE_VERSION}")
 
-project(numstore VERSION ${NUMSTORE_VERSION} LANGUAGES C)
+# project() only takes digits, so a pre-release suffix (1.5.0rc1) is trimmed
+# here. The wheel still gets the full string from version.txt.
+string(
+    REGEX MATCH "^[0-9]+(\\.[0-9]+)*"
+    NUMSTORE_CMAKE_VERSION
+    "${NUMSTORE_VERSION}"
+)
+
+project(numstore VERSION ${NUMSTORE_CMAKE_VERSION} LANGUAGES C)
 
 include(GNUInstallDirs)
 
@@ -66,6 +74,33 @@ install(
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# The installed package carries the version from version.txt, so a consumer can
+# pin it with find_package(numstore 1.5).
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+    cmake/numstoreConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/numstoreConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/numstore
+)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/numstoreConfigVersion.cmake
+    COMPATIBILITY SameMajorVersion
+)
+
+install(
+    EXPORT numstoreTargets
+    FILE numstoreTargets.cmake
+    NAMESPACE numstore::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/numstore
+)
+install(
+    FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/numstoreConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/numstoreConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/numstore
+)
 
 #####################################################################
 ### pynumstore
@@ -134,4 +169,13 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 
     add_executable(unit_tests ${_unit_tests_c})
     target_link_libraries(unit_tests PRIVATE numstore)
+endif()
+
+#####################################################################
+### docs
+### Off by default: the HTML site needs pandoc, which a code build does not.
+option(NUMSTORE_DOCS "Render docs/ to HTML with pandoc" OFF)
+
+if(NUMSTORE_DOCS)
+    add_subdirectory(docs)
 endif()

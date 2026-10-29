@@ -39,7 +39,7 @@ skip = [
     "cp310-win_arm64",
 ]
 test-extras = ["test"]
-test-sources = ["pytest", "pyproject.toml"]
+test-sources = ["pytest", "pyproject.toml", "version.txt"]
 test-command = "python -m pytest pytest"
 
 [tool.pytest.ini_options]

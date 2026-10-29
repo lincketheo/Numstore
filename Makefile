@@ -56,6 +56,15 @@ build/release/CMakeCache.txt:
 	cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release
 
 
+############ Docs
+.PHONY: docs
+docs: build/docs/CMakeCache.txt
+	cmake --build build/docs --target docs
+
+build/docs/CMakeCache.txt:
+	cmake -S . -B build/docs -DNUMSTORE_DOCS=ON
+
+
 ############ Code Coverage
 # apps/ is the two entry points plus the generated unit_tests.c; samples/ is
 # documentation. Neither is library code, so neither belongs in the ratio.
