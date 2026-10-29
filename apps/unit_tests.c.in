@@ -31,6 +31,11 @@ main (int argc, char **argv)
     fprintf (stderr, "Usage: %s seed [FILTER]\n", argv[0]);
     return EXIT_FAILURE;
   }
+  // Unbuffered: a crash or abort must not swallow the tail of the log, and
+  // make's stderr must not interleave ahead of our stdout. The last line
+  // printed is then genuinely the last line reached.
+  setvbuf (stdout, NULL, _IONBF, 0);
+
   u64 seed = strtoul(argv[1], NULL, 10);
   const char *filter = (argc == 3) ? argv[2] : NULL;
 

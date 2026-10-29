@@ -69,9 +69,19 @@ error_causef (error *e, const err_t c, const char *fmt, ...)
   char    tmpbuf[256];
   va_list ap_copy;
   va_copy (ap_copy, ap);
-  u32 cmlen = vsnprintf (tmpbuf, sizeof (tmpbuf), fmt, ap_copy);
-  cmlen     = MIN (cmlen, 255);
+  // vsnprintf returns int: negative on an encoding error, and MSVC's CRT is
+  // the one that actually does so. Assigning that straight to u32 wrapped it
+  // to a huge value, and left tmpbuf possibly unterminated for the %s below.
+  const int written = vsnprintf (tmpbuf, sizeof (tmpbuf), fmt, ap_copy);
   va_end (ap_copy);
+
+  u32 cmlen;
+  if (written < 0) {
+    tmpbuf[0] = '\0'; // vsnprintf gives no termination guarantee on failure
+    cmlen     = 0;
+  } else {
+    cmlen = MIN ((u32)written, 255);
+  }
 
   if (e->cause_code != SUCCESS) {
     if (!e->disable_log) {
