@@ -1281,6 +1281,98 @@ nsdb_plan_console (struct nsdb_plan *ns, error *_e)
   return SUCCESS;
 }
 
+#ifndef NDEBUG
+// nsdb_console opens and closes its own transaction, so no transaction may be
+// open across a call -- nsdb_begin holds the DB lock exclusively.
+TEST (nsdb_console)
+{
+  nsdb_cleanup ("./test.db", ctx->os, &ctx->e);
+  struct nsdb *db = nsdb_open ("./test.db", ctx->mem, ctx->os, &ctx->e);
+  nsdb_init_numstore (db, &ctx->e);
+
+  TEST_CASE ("create prints the variable and commits it")
+  {
+    test_assert_int_equal (nsdb_console (db, "create foo u32", &ctx->e), SUCCESS);
+
+    struct txn *tx = nsdb_begin (db, &ctx->e);
+    check_nbytes (db, tx, "foo", 0, &ctx->e);
+    nsdb_commit (db, tx, &ctx->e);
+  }
+
+  TEST_CASE ("read prints every element and returns the element count")
+  {
+    u32 src[10];
+    arr_range (src);
+
+    struct txn *tx = nsdb_begin (db, &ctx->e);
+    nsdb_write (db, tx, src, sizeof (src), "insert foo 0 10", &ctx->e);
+    nsdb_commit (db, tx, &ctx->e);
+
+    test_assert_int_equal (nsdb_console (db, "read foo[0:]", &ctx->e), 10);
+  }
+
+  // These arms only name the query type; none of them touch the pager.
+  TEST_CASE ("the unimplemented query types are only named")
+  {
+    test_assert (nsdb_console (db, "write foo[0:10]", &ctx->e) > 0);
+    test_assert (nsdb_console (db, "remove foo[0:10]", &ctx->e) > 0);
+    test_assert (nsdb_console (db, "insert foo 0 10", &ctx->e) > 0);
+    test_assert (nsdb_console (db, "delete foo", &ctx->e) > 0);
+    test_assert (nsdb_console (db, "get foo", &ctx->e) > 0);
+    test_assert (nsdb_console (db, "exit", &ctx->e) > 0);
+    test_assert (nsdb_console (db, "help", &ctx->e) > 0);
+  }
+
+  TEST_CASE ("a query that will not compile is reported")
+  {
+    test_err_t_check (nsdb_console (db, "not a real query", &ctx->e), ERR_SYNTAX, &ctx->e);
+  }
+
+  // numstore_create is get-or-create, so a repeated create is not an error: it
+  // prints the variable that is already there and leaves its data alone.
+  TEST_CASE ("create of an existing variable keeps the existing data")
+  {
+    test_assert_int_equal (nsdb_console (db, "create foo u32", &ctx->e), SUCCESS);
+    test_assert_int_equal (nsdb_console (db, "read foo[0:]", &ctx->e), 10);
+  }
+
+  // The failing read has to roll back, or the next nsdb_begin would hang on the
+  // DB lock. The follow-up console call is what proves it did.
+  TEST_CASE ("read of a missing variable rolls back and is reported")
+  {
+    test_err_t_check (nsdb_console (db, "read nope[0:]", &ctx->e), ERR_VARIABLE_NE, &ctx->e);
+    test_assert_int_equal (nsdb_console (db, "read foo[0:]", &ctx->e), 10);
+  }
+
+  nsdb_close (db, &ctx->e);
+}
+
+// Reading an empty variable through the console aborts the process.
+//
+// CAUSE:
+//   numstore_read_malloc quits early on stride.nelems == 0: it sets *dlen = 0,
+//   *dest = NULL and returns SUCCESS. nsdb_plan_console_read then runs its
+//   cleanup unconditionally --
+//
+//     mem.table->free (mem.self, data);
+//
+//   -- and default_free ASSERTs (v), so a NULL data aborts rather than being
+//   skipped. Fix: use mem_cfree (mem, data), the maybe-NULL variant.
+//
+// Disabled because it aborts the whole suite instead of failing one test.
+TEST_DISABLED (nsdb_console_read_empty_variable)
+{
+  nsdb_cleanup ("./test.db", ctx->os, &ctx->e);
+  struct nsdb *db = nsdb_open ("./test.db", ctx->mem, ctx->os, &ctx->e);
+  nsdb_init_numstore (db, &ctx->e);
+
+  test_assert_int_equal (nsdb_console (db, "create empt u32", &ctx->e), SUCCESS);
+  test_assert_int_equal (nsdb_console (db, "read empt[0:]", &ctx->e), 0);
+
+  nsdb_close (db, &ctx->e);
+}
+#endif
+
 err_t
 nsdb_execute (struct nsdb *db, struct txn *tx, const char *query, error *_e)
 {

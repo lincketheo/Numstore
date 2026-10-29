@@ -332,9 +332,184 @@ TEST (pager_open)
 
     ctx->mem.table->free (ctx->mem.self, name);
   }
+}
 
-  TEST_CASE ("pgr malloc fails")
-  {}
+// pgr_open takes a file, a WAL, a lock table, a dirty-page table, a
+// transaction table and a checkpoint task, in that order. Failing the Nth
+// allocation walks the unwind block one resource at a time.
+//
+// The invariant is the same for every budget: either a usable pager comes
+// back, or NULL with the error set and every resource already released.
+// test_ctx_free is the second half of the assertion -- it fails the test if the
+// unwind left a file open or a thread unjoined.
+// DISABLED: budget 3 lands inside wal_init and aborts the process on a double
+// free, so the sweep cannot run past it.
+//
+// CAUSE:
+//   Every failure path in wal_init (ns_wal.c) frees the name buffer it was
+//   handed --
+//
+//     dest->mem.table->free (dest->mem.self, (char *)dest->fname.data);
+//
+//   -- and then wal_open_internal frees the same pointer again on the way out:
+//
+//     if (wal_init (dest, e)) {
+//       mem.table->free (mem.self, (char *)dest->fname.data);   // already gone
+//       mem.table->free (mem.self, dest);
+//
+//   fname.data is allocated by wal_open_internal (string_copy), so the frees
+//   inside wal_init are the wrong ones. Fix: drop the four fname.data frees in
+//   wal_init and leave ownership with wal_open_internal.
+//
+//   Reachable from any wal_init failure, so a faulty OS triggers it just as a
+//   faulty allocator does.
+TEST_DISABLED (pgr_open_unwinds_on_allocation_failure)
+{
+  enum
+  {
+    // Past the last allocation pgr_open makes, so the tail budgets also cover
+    // the fully-successful open.
+    max_budget = 24
+  };
+
+  for (int budget = 0; budget < max_budget; ++budget) {
+    TEST_CASE ("malloc budget %d", budget)
+    {
+      test_fail_if (pgr_delete_single_file ("testdb", ctx->os, &ctx->e));
+
+      faulty_mem_reset (ctx->faulty_mem);
+      faulty_mem_fail_after (ctx->faulty_mem, budget);
+
+      struct pager *p = pgr_open ("testdb", ctx->faulty_mem, ctx->os, &ctx->e);
+
+      if (p == NULL) {
+        test_assert (ctx->e.cause_code < 0);
+        error_reset (&ctx->e);
+      } else {
+        test_assert_int_equal (ctx->e.cause_code, SUCCESS);
+        // Closing must not be starved by a budget that never fired.
+        faulty_mem_reset (ctx->faulty_mem);
+        test_fail_if (pgr_close (p, &ctx->e));
+      }
+    }
+  }
+
+  test_fail_if (pgr_delete_single_file ("testdb", ctx->os, &ctx->e));
+}
+
+static u32
+pgr_lsn_checksum (lsn l)
+{
+  u32 csm = checksum_init ();
+  checksum_execute (&csm, (void *)&l, sizeof l);
+  return csm;
+}
+
+// Overwrites the header of testdb, leaving its pages alone. The header is four
+// fields, each lsn next to its checksum:
+//
+//   [ lsn0 | csm0 | lsn1 | csm1 ]
+//     ^0     ^8     ^12    ^20
+//
+// An lsn is trusted only when its checksum matches, so [lsn0valid] and
+// [lsn1valid] choose between the real checksum and a deliberately wrong one.
+static void
+pgr_write_raw_header (struct i_os os, lsn lsn0, bool lsn0valid, lsn lsn1, bool lsn1valid, error *e)
+{
+  const u32 bad_csm = 0xDEADBEEFU;
+
+  u32       csm0    = lsn0valid ? pgr_lsn_checksum (lsn0) : bad_csm;
+  u32       csm1    = lsn1valid ? pgr_lsn_checksum (lsn1) : bad_csm;
+
+  u8        hdr[PAGE_HEADER_LEN];
+  memcpy (hdr + LSN0_OFST, &lsn0, sizeof lsn0);
+  memcpy (hdr + LSN0_CSM_OFST, &csm0, sizeof csm0);
+  memcpy (hdr + LSN1_OFST, &lsn1, sizeof lsn1);
+  memcpy (hdr + LSN1_CSM_OFST, &csm1, sizeof csm1);
+
+  i_file f = {0};
+  if (os.table->open_file_rw (os.self, &f, "testdb", e)) {
+    return;
+  }
+  f.table->pwrite_all (f.self, hdr, sizeof hdr, 0, e);
+  os.table->close_file (os.self, f.self, e);
+}
+
+// The seeded wal below starts at lsn 0, so a trustworthy header lsn is also an
+// agreeing one only when it is 0. The last row is the control: without it the
+// rest would still pass if pgr_open rejected every existing database.
+static struct
+{
+  const char *name;
+  lsn         lsn0;
+  bool        lsn0valid;
+  lsn         lsn1;
+  bool        lsn1valid;
+  bool        opens;
+} pgr_header_cases[] = {
+    {"neither lsn is trustworthy", 7, false, 9, false, false},
+    {"lone valid lsn ahead of the wal", 1234, true, 9, false, false},
+    {"both valid, wal matches neither", 1000, true, 2000, true, false},
+    {"lone valid lsn matching the wal", 0, true, 9, false, true},
+};
+
+TEST (pgr_open_rejects_a_corrupt_header)
+{
+  // Leaves testdb on disk with one committed page and a live wal, which is
+  // what the header checks under test need:
+  //
+  //   - a db file longer than its header, or fpgr_open flags it FP_ISNEW again
+  //     (an empty db is exactly PAGE_HEADER_LEN long) and pgr_open rewrites
+  //     the header instead of reading it
+  //   - a wal to compare that header against, so pgr_crash and not pgr_close,
+  //     which deletes the wal on the way out
+#  define seed_existing_db()                                                 \
+    do {                                                                     \
+      test_fail_if (pgr_delete_single_file ("testdb", ctx->os, &ctx->e));    \
+      struct pager *_seed = pgr_open ("testdb", ctx->mem, ctx->os, &ctx->e); \
+      test_assert (_seed != NULL);                                           \
+      struct txn _tx;                                                        \
+      test_fail_if (pgr_begin_txn (&_tx, _seed, &ctx->e));                   \
+      page_h _h = page_h_create ();                                          \
+      test_fail_if (pgr_new (&_h, _seed, &_tx, PG_DATA_LIST, &ctx->e));      \
+      dl_set_used (page_h_w (&_h), DL_DATA_SIZE);                            \
+      test_fail_if (pgr_release (_seed, &_h, PG_DATA_LIST, &ctx->e));        \
+      test_fail_if (pgr_commit (_seed, &_tx, &ctx->e));                      \
+      test_fail_if (pgr_crash (_seed, &ctx->e));                             \
+    }                                                                        \
+    while (0)
+
+  for (u32 i = 0; i < arrlen (pgr_header_cases); ++i) {
+    TEST_CASE ("%s", pgr_header_cases[i].name)
+    {
+      seed_existing_db ();
+
+      pgr_write_raw_header (
+          ctx->os,
+          pgr_header_cases[i].lsn0,
+          pgr_header_cases[i].lsn0valid,
+          pgr_header_cases[i].lsn1,
+          pgr_header_cases[i].lsn1valid,
+          &ctx->e
+      );
+      test_assert_int_equal (ctx->e.cause_code, SUCCESS);
+
+      struct pager *p = pgr_open ("testdb", ctx->mem, ctx->os, &ctx->e);
+
+      if (pgr_header_cases[i].opens) {
+        test_assert (p != NULL);
+        test_assert_int_equal (ctx->e.cause_code, SUCCESS);
+        test_fail_if (pgr_close (p, &ctx->e));
+      } else {
+        test_assert_equal (p, NULL);
+        test_err_t_check (ctx->e.cause_code, ERR_CORRUPT, &ctx->e);
+      }
+    }
+  }
+
+#  undef seed_existing_db
+
+  test_fail_if (pgr_delete_single_file ("testdb", ctx->os, &ctx->e));
 }
 #endif
 

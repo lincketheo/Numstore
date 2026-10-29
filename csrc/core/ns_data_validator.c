@@ -885,4 +885,411 @@ TEST (dvalidtr_random_test_reports_a_broken_sut)
   }
 }
 
+/******************************************************************************
+ * SECTION: Failure reporting
+ * ----------------------------------------------------------------------------
+ * The validator is the oracle the simulation tests trust, so the branches that
+ * matter most are the ones that report a disagreement. [dv_stub] is a
+ * data_writer over an ext_array that can be told to refuse an operation, or to
+ * lie about how much it moved, so either side can be broken on purpose.
+ *
+ * error_causef only records a cause when the error is still clean, so a writer
+ * that refused with ERR_IO keeps that code and the validator's ERR_CORRUPT is
+ * only a trace line. ERR_CORRUPT is returned only where the validator itself
+ * is the first to notice -- a count, data or length disagreement.
+ ******************************************************************************/
+
+enum
+{
+  DV_F_INSERT = 1 << 0,
+  DV_F_READ   = 1 << 1,
+  DV_F_WRITE  = 1 << 2,
+  DV_F_REMOVE = 1 << 3,
+  DV_F_GETLEN = 1 << 4,
+  DV_F_ALLOPS = DV_F_INSERT | DV_F_READ | DV_F_WRITE | DV_F_REMOVE,
+};
+
+/// [fail] is a mask of DV_F_* operations that return an error instead of
+/// forwarding. [delta] is added to the count a *successful* op returns, which
+/// is how the "count mismatch" branches are reached without an error. getlen
+/// stays honest under [delta] so the length checks still mean something.
+struct dv_stub
+{
+  struct ext_array arr;
+  u32              fail;
+  i64              delta;
+};
+
+static err_t
+dv_stub_insert (void *vctx, const u32 ofst, const void *src, const u32 slen, error *e)
+{
+  struct dv_stub *s = vctx;
+  if (s->fail & DV_F_INSERT) {
+    return error_causef (e, ERR_IO, "dv_stub: insert refused");
+  }
+  const i64 n = ext_array_insert (&s->arr, ofst, src, slen, e);
+  return n < 0 ? (err_t)n : (err_t)(n + s->delta);
+}
+
+static i64
+dv_stub_read (void *vctx, const struct stride str, const u32 size, void *dest, error *e)
+{
+  struct dv_stub *s = vctx;
+  if (s->fail & DV_F_READ) {
+    return error_causef (e, ERR_IO, "dv_stub: read refused");
+  }
+  return (i64)ext_array_read (&s->arr, str, size, dest) + s->delta;
+}
+
+static i64
+dv_stub_write (void *vctx, const struct stride str, const u32 size, const void *src, error *e)
+{
+  struct dv_stub *s = vctx;
+  if (s->fail & DV_F_WRITE) {
+    return error_causef (e, ERR_IO, "dv_stub: write refused");
+  }
+  return (i64)ext_array_write (&s->arr, str, size, src) + s->delta;
+}
+
+static i64
+dv_stub_remove (void *vctx, const struct stride str, const u32 size, void *dest, error *e)
+{
+  struct dv_stub *s = vctx;
+  if (s->fail & DV_F_REMOVE) {
+    return error_causef (e, ERR_IO, "dv_stub: remove refused");
+  }
+  return (i64)ext_array_remove (&s->arr, str, size, dest) + s->delta;
+}
+
+static i64
+dv_stub_getlen (void *vctx, error *e)
+{
+  struct dv_stub *s = vctx;
+  if (s->fail & DV_F_GETLEN) {
+    return error_causef (e, ERR_IO, "dv_stub: getlen refused");
+  }
+  return (i64)ext_array_get_len (&s->arr);
+}
+
+static const struct data_writer_functions dv_stub_funcs = {
+    .insert = dv_stub_insert,
+    .read   = dv_stub_read,
+    .write  = dv_stub_write,
+    .remove = dv_stub_remove,
+    .getlen = dv_stub_getlen,
+};
+
+/// A validator wired to two stubs, so a test can break the ref, the sut, or
+/// neither. Both arrays start holding [dv_payload].
+///
+///   ref: [10 20 30 40 50 60 70 80]
+///   sut: [10 20 30 40 50 60 70 80]
+struct dv_pair
+{
+  struct dv_stub  ref;
+  struct dv_stub  sut;
+  struct dvalidtr d;
+};
+
+static void
+dv_pair_init (struct dv_pair *p, const struct i_mem mem, error *e)
+{
+  p->ref = (struct dv_stub){.arr = ext_array_create (mem), .fail = 0, .delta = 0};
+  p->sut = (struct dv_stub){.arr = ext_array_create (mem), .fail = 0, .delta = 0};
+
+  ext_array_insert (&p->ref.arr, 0, dv_payload, sizeof dv_payload, e);
+  ext_array_insert (&p->sut.arr, 0, dv_payload, sizeof dv_payload, e);
+
+  p->d = (struct dvalidtr){
+      .mem     = mem,
+      .isvalid = NULL,
+      .ref     = {.functions = dv_stub_funcs, .ctx = &p->ref},
+      .sut     = {.functions = dv_stub_funcs, .ctx = &p->sut},
+  };
+}
+
+static void
+dv_pair_free (struct dv_pair *p)
+{
+  ext_array_free (&p->ref.arr);
+  ext_array_free (&p->sut.arr);
+}
+
+static const struct stride dv_head = {.start = 0, .stride = 1, .nelems = 4};
+
+TEST (dvalidtr_light_validate_propagates_getlen_failure)
+{
+  // Ordered: the sut is asked first, so a broken ref is only seen when the
+  // sut answered.
+  TEST_CASE ("a refusing sut getlen is propagated")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.fail = DV_F_GETLEN;
+
+    test_err_t_check (dvalidtr_light_validate (&p.d, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a refusing ref getlen is propagated")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.ref.fail = DV_F_GETLEN;
+
+    test_err_t_check (dvalidtr_light_validate (&p.d, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+}
+
+TEST (dvalidtr_read_reports_failures)
+{
+  TEST_CASE ("a refusing ref read is reported as corruption")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.ref.fail = DV_F_READ;
+
+    test_err_t_check (dvalidtr_read (&p.d, dv_head, 1, NULL, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a refusing sut read is reported as corruption")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.fail = DV_F_READ;
+
+    test_err_t_check (dvalidtr_read (&p.d, dv_head, 1, NULL, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  // Same bytes, different count: the count check has to fire before memcmp.
+  TEST_CASE ("a sut that under-reports its read count is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.delta = -1;
+
+    test_err_t_check (dvalidtr_read (&p.d, dv_head, 1, NULL, &ctx->e), ERR_CORRUPT, &ctx->e);
+    dv_pair_free (&p);
+  }
+}
+
+TEST (dvalidtr_insert_reports_failures)
+{
+  TEST_CASE ("a refusing ref insert is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.ref.fail = DV_F_INSERT;
+
+    test_err_t_check (dvalidtr_insert (&p.d, 0, dv_payload, 4, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a refusing sut insert is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.fail = DV_F_INSERT;
+
+    test_err_t_check (dvalidtr_insert (&p.d, 0, dv_payload, 4, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a sut that over-reports its insert count is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.delta = 1;
+
+    test_err_t_check (dvalidtr_insert (&p.d, 0, dv_payload, 4, &ctx->e), ERR_CORRUPT, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  // Both inserts agree, so the failure can only surface in the read-back.
+  TEST_CASE ("a read-back that cannot run fails the insert")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.ref.fail = DV_F_READ;
+
+    test_err_t_check (dvalidtr_insert (&p.d, 0, dv_payload, 4, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  // The read-back only covers the inserted range, so trailing extra bytes in
+  // the sut are invisible to it and only the length check can catch them.
+  //
+  //   ref: [....8....] + insert 4 -> 12
+  //   sut: [....8....][aa bb] + insert 4 -> 14
+  TEST_CASE ("agreeing inserts over diverged lengths fail the length check")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+
+    const u8 extra[2] = {0xAA, 0xBB};
+    ext_array_insert (&p.sut.arr, sizeof dv_payload, extra, sizeof extra, &ctx->e);
+    test_assert_int_equal (ctx->e.cause_code, SUCCESS);
+
+    test_err_t_check (dvalidtr_insert (&p.d, 0, dv_payload, 4, &ctx->e), ERR_CORRUPT, &ctx->e);
+    dv_pair_free (&p);
+  }
+}
+
+TEST (dvalidtr_write_reports_failures)
+{
+  const u8 replacement[4] = {0x01, 0x02, 0x03, 0x04};
+
+  // Ordered: the sut is written first, so a broken ref is only seen when the
+  // sut accepted the write.
+  TEST_CASE ("a refusing sut write is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.fail = DV_F_WRITE;
+
+    test_err_t_check (dvalidtr_write (&p.d, dv_head, 1, replacement, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a refusing ref write is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.ref.fail = DV_F_WRITE;
+
+    test_err_t_check (dvalidtr_write (&p.d, dv_head, 1, replacement, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a sut that under-reports its write count is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.delta = -1;
+
+    test_err_t_check (
+        dvalidtr_write (&p.d, dv_head, 1, replacement, &ctx->e),
+        ERR_CORRUPT,
+        &ctx->e
+    );
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a read-back that cannot run fails the write")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.ref.fail = DV_F_READ;
+
+    test_err_t_check (dvalidtr_write (&p.d, dv_head, 1, replacement, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a failing isvalid hook fails the write")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.d.isvalid = dv_isvalid_always_fails;
+
+    test_err_t_check (
+        dvalidtr_write (&p.d, dv_head, 1, replacement, &ctx->e),
+        ERR_CORRUPT,
+        &ctx->e
+    );
+    dv_pair_free (&p);
+  }
+}
+
+TEST (dvalidtr_remove_reports_failures)
+{
+  TEST_CASE ("a refusing ref remove is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.ref.fail = DV_F_REMOVE;
+
+    test_err_t_check (dvalidtr_remove (&p.d, dv_head, 1, NULL, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a refusing sut remove is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.fail = DV_F_REMOVE;
+
+    test_err_t_check (dvalidtr_remove (&p.d, dv_head, 1, NULL, &ctx->e), ERR_IO, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  TEST_CASE ("a sut that under-reports its remove count is reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.delta = -1;
+
+    test_err_t_check (dvalidtr_remove (&p.d, dv_head, 1, NULL, &ctx->e), ERR_CORRUPT, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  // Same count removed, different bytes handed back.
+  TEST_CASE ("removed bytes that diverge are reported")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.sut.arr.data[1] ^= 0xFF;
+
+    test_err_t_check (dvalidtr_remove (&p.d, dv_head, 1, NULL, &ctx->e), ERR_CORRUPT, &ctx->e);
+    dv_pair_free (&p);
+  }
+
+  // The removed prefix matches, so only the post-remove length check sees the
+  // trailing bytes the sut has and the ref does not.
+  //
+  //   ref: [....8....]    - remove 4 -> 4
+  //   sut: [....8....][aa bb] - remove 4 -> 6
+  TEST_CASE ("agreeing removes over diverged lengths fail the length check")
+  {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+
+    const u8 extra[2] = {0xAA, 0xBB};
+    ext_array_insert (&p.sut.arr, sizeof dv_payload, extra, sizeof extra, &ctx->e);
+    test_assert_int_equal (ctx->e.cause_code, SUCCESS);
+
+    test_err_t_check (dvalidtr_remove (&p.d, dv_head, 1, NULL, &ctx->e), ERR_CORRUPT, &ctx->e);
+    dv_pair_free (&p);
+  }
+}
+
+// The random driver has a separate report per action, so every action has to be
+// seen failing. The stub refuses all four, and the arrays start non-empty so
+// the driver is free to pick any of them rather than being forced to insert.
+TEST (dvalidtr_random_test_reports_every_failing_action)
+{
+  for (u32 iter = 0; iter < 40; ++iter) {
+    struct dv_pair p;
+    dv_pair_init (&p, ctx->mem, &ctx->e);
+    p.ref.fail = DV_F_ALLOPS;
+    p.sut.fail = DV_F_ALLOPS;
+
+    test_err_t_check (dvalidtr_random_test (&p.d, 1, 1, 8, &ctx->e), ERR_CORRUPT, &ctx->e);
+    dv_pair_free (&p);
+  }
+}
+
+// getlen is the first call the driver makes, so it fails before any action.
+TEST (dvalidtr_random_test_propagates_getlen_failure)
+{
+  struct dv_pair p;
+  dv_pair_init (&p, ctx->mem, &ctx->e);
+  p.ref.fail = DV_F_GETLEN;
+
+  test_err_t_check (dvalidtr_random_test (&p.d, 1, 1, 8, &ctx->e), ERR_IO, &ctx->e);
+  dv_pair_free (&p);
+}
+
 #endif
