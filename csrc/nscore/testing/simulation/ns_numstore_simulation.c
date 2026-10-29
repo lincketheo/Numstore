@@ -21,7 +21,6 @@
 #include "core/ns_numerics.h"
 #include "core/os/ns_malloc.h"
 #include "core/os/ns_os.h"
-#include "nscore/algorithms/rope/ns_rope_algorithms.h"
 #include "nscore/nsdb/ns_nsdb.h"
 #include "nscore/testing/simulation/ns_db_state_machine.h"
 #include "nscore/testing/simulation/ns_operation_generator.h"
@@ -108,9 +107,6 @@ nss_crash_and_reopen (struct ns_simulation *meta, error *e)
   ns_ref_crash_and_reopen (meta->ref);
   WRAP (ns_db_crash_and_reopen (meta->db, e));
 
-  // Nothing else validates a rope that the current variable is not pointing
-  // at, so corruption introduced here is otherwise only found when something
-  // happens to read that variable again
   WRAP (ns_db_validate_all (meta->db, e));
   return SUCCESS;
 }

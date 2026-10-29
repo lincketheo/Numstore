@@ -83,20 +83,8 @@ sb_size ns_db_read (struct ns_db *db, void *dest, b_size dlen, struct stride str
 sb_size ns_db_write (struct ns_db *db, const void *data, b_size dlen, struct stride str, error *e);
 err_t ns_db_validate (struct ns_db *db, error *e);
 
-/**
- * Walks every variable in the database. Reads through the pager with no
- * transaction, so it cannot see uncommitted work -- only call it outside a
- * transaction.
- */
+// TODO - make these better
 err_t ns_db_visit_vars (struct ns_db *db, var_consumer cb, void *ctx, error *e);
-
-/**
- * Runs ns_rope_validate over every variable, not just the current one.
- *
- * Walks each variable's bottom layer, so it is far too expensive to call
- * after every operation - use it where the cheap per-operation checks are
- * blind, which is after a reopen.
- */
 err_t ns_db_validate_all (struct ns_db *db, error *e);
 
 #endif

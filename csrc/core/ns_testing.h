@@ -61,8 +61,14 @@ struct test_ctx
 struct test_ctx *test_ctx_create (error *e);
 void test_ctx_free (struct test_ctx *ctx);
 
-#  define TEST(name)                                           \
-    static void __test_body__##name (struct test_ctx *ctx);    \
+#  define TEST_BODY_DECL(name) static void __test_body__##name (struct test_ctx *ctx);
+
+#  define TEST_BODY_IMPL(name) static void __test_body__##name (struct test_ctx *ctx)
+
+#  define TEST_NOOP(name) \
+    MAYBE_UNUSED static void __disabled_test_body__##name (struct test_ctx *ctx)
+
+#  define TEST_WRAPPER(name)                                   \
     void __test__##name (void)                                 \
     {                                                          \
       error            ___e = error_create ();                 \
@@ -74,8 +80,20 @@ void test_ctx_free (struct test_ctx *ctx);
       }                                                        \
       __test_body__##name (ctx);                               \
       test_ctx_free (ctx);                                     \
-    }                                                          \
-    static void __test_body__##name (MAYBE_UNUSED struct test_ctx *ctx)
+    }
+
+#  define TEST_DISABLED(name) \
+    TEST_BODY_DECL (name)     \
+    TEST_WRAPPER (name)       \
+    TEST_BODY_IMPL (name)     \
+    { /* noop */              \
+    }                         \
+    TEST_NOOP (name)
+
+#  define TEST(name)      \
+    TEST_BODY_DECL (name) \
+    TEST_WRAPPER (name)   \
+    TEST_BODY_IMPL (name)
 
 #  define TEST_CASE(fmt, ...)                                                                \
     for (int _tc_once = (i_log_test_case (fmt "\n", ##__VA_ARGS__), 1), _tc_prev = test_ret; \

@@ -532,18 +532,21 @@ ns_db_write (struct ns_db *db, const void *data, b_size dlen, struct stride str,
   return ret;
 }
 
+// TODO - Make This Better
 err_t
 ns_db_visit_vars (struct ns_db *db, var_consumer cb, void *ctx, error *e)
 {
   return ns_visit_variables (db->db->p, cb, ctx, e);
 }
 
+// TODO - Make This Better
 static err_t
 validate_one_rope (struct variable *v, void *ctx, error *e)
 {
   return ns_rope_validate ((struct pager *)ctx, v->rpt_root, e);
 }
 
+// TODO - Make This Better
 err_t
 ns_db_validate_all (struct ns_db *db, error *e)
 {
