@@ -413,13 +413,31 @@ gr_lock_mode_name (const enum lock_mode mode)
 }
 
 #ifndef NDEBUG
+// Asserted rather than logged: i_log_info is ((void)0) below LOG_INFO, which
+// discards its arguments, so a logged call would not even evaluate the name.
 TEST (gr_lock_mode_name)
 {
-  i_log_info ("%s\n", gr_lock_mode_name (LM_IS));
-  i_log_info ("%s\n", gr_lock_mode_name (LM_IX));
-  i_log_info ("%s\n", gr_lock_mode_name (LM_S));
-  i_log_info ("%s\n", gr_lock_mode_name (LM_SIX));
-  i_log_info ("%s\n", gr_lock_mode_name (LM_X));
+  TEST_CASE ("Every mode has its own name")
+  {
+    test_assert_int_equal (strcmp (gr_lock_mode_name (LM_IS), "IS"), 0);
+    test_assert_int_equal (strcmp (gr_lock_mode_name (LM_IX), "IX"), 0);
+    test_assert_int_equal (strcmp (gr_lock_mode_name (LM_S), "S"), 0);
+    test_assert_int_equal (strcmp (gr_lock_mode_name (LM_SIX), "SIX"), 0);
+    test_assert_int_equal (strcmp (gr_lock_mode_name (LM_X), "X"), 0);
+  }
+
+  TEST_CASE ("The table covers the enum, with no duplicates")
+  {
+    for (int m = 0; m < LM_COUNT; ++m) {
+      const char *name = gr_lock_mode_name ((enum lock_mode)m);
+      test_assert (name != NULL);
+      test_assert (name[0] != '\0');
+
+      for (int n = 0; n < m; ++n) {
+        test_assert (strcmp (name, gr_lock_mode_name ((enum lock_mode)n)) != 0);
+      }
+    }
+  }
 }
 #endif
 
@@ -474,6 +492,12 @@ struct lock_test_ctx
   atomic_int      t2_acquired;
   atomic_int      counter;
 
+  // Set by the main thread when thread 1 may drop [mode1]. A gate rather
+  // than a sleep: the main thread gets to sample the blocked state for as
+  // long as it needs to, so a loaded machine cannot turn the sample into a
+  // race.
+  atomic_int      t1_release;
+
   enum lock_mode  mode1;
   enum lock_mode  mode2;
 };
@@ -519,11 +543,30 @@ thread_hold_and_signal (void *arg)
   ctx->gate_cv.table->cond_broadcast (ctx->gate_cv.self);
   ctx->gate_mtx.table->mutex_unlock (ctx->gate_mtx.self);
 
-  // Hold long enough for the main thread to sample "blocked" state
-  i_sleep_ms (100);
+  // Hold until the main thread has sampled whatever it wanted to sample
+  while (!atomic_load (&ctx->t1_release)) {
+    spin_pause ();
+  }
 
   gr_unlock (ctx->lock, ctx->mode1);
   return NULL;
+}
+
+/// Samples [l] under its own mutex while other threads are still running:
+/// returns whether anyone is parked inside gr_lock and copies out the holder
+/// counts that go with that answer.
+///
+/// A waiter is pushed onto [l->head] under [l->mutex] and only unlinked once
+/// its mode became compatible, so "is anyone blocked right now" is an exact
+/// answer here and not a guess about scheduling.
+static bool
+lock_sample (struct gr_lock *l, int *holder_counts)
+{
+  l->mutex.table->mutex_lock (l->mutex.self);
+  const bool waiting = l->head != NULL;
+  memcpy (holder_counts, l->holder_counts, sizeof (l->holder_counts));
+  l->mutex.table->mutex_unlock (l->mutex.self);
+  return waiting;
 }
 
 static void *
@@ -611,6 +654,12 @@ TEST (gr_lock_is_is_compatible)
   ctx->os.table->thread_create (ctx->os.self, &t1, thread_hold_and_signal, &lctx, &ctx->e);
   ctx->os.table->thread_create (ctx->os.self, &t2, thread_wait_and_try, &lctx, &ctx->e);
 
+  // IS + IS: thread 2 gets in while thread 1 still holds the lock
+  while (!atomic_load (&lctx.t2_acquired)) {
+    spin_pause ();
+  }
+  atomic_store (&lctx.t1_release, 1);
+
   ctx->os.table->thread_join (ctx->os.self, t1.self);
   ctx->os.table->thread_join (ctx->os.self, t2.self);
 
@@ -620,37 +669,55 @@ TEST (gr_lock_is_is_compatible)
 }
 
 // Example of a Blocking Test (Incompatible)
-// This one is breaking on Mac Os
-/**
-TEST_DISABLED (gr_lock_is_x_blocks)
+//
+// This used to sleep 50ms and then sample "is thread 2 still blocked?", which
+// is not an invariant on a loaded machine - it failed on macOS. It now waits
+// for thread 2 to actually be parked on the lock's waiter list and holds
+// thread 1 until the sample is taken, so there is no timing assumption left.
+TEST (gr_lock_is_x_blocks)
 {
   struct gr_lock lock;
-  error          e = error_create ();
-  gr_lock_init (&lock, os, &e);
+  gr_lock_init (&lock, ctx->os, &ctx->e);
 
-  struct lock_test_ctx ctx;
-  lock_test_ctx_init (&ctx, &lock, os);
-  ctx.mode1 = LM_IS;
-  ctx.mode2 = LM_X;
+  struct lock_test_ctx lctx;
+  lock_test_ctx_init (&lctx, &lock, ctx->os);
+  lctx.mode1 = LM_IS;
+  lctx.mode2 = LM_X;
 
   i_thread t1, t2;
-  os.table->thread_create (os.self, &t1, thread_hold_and_signal, &ctx, &e); os.table->thread_create
-(os.self, &t2, thread_wait_and_try, &ctx, &e);
+  ctx->os.table->thread_create (ctx->os.self, &t1, thread_hold_and_signal, &lctx, &ctx->e);
+  ctx->os.table->thread_create (ctx->os.self, &t2, thread_wait_and_try, &lctx, &ctx->e);
 
-  // Wait slightly to let T2 hit the block, then check status
-  i_sleep_ms (50);
-  test_assert (ctx.t1_acquired);
-  test_assert (ctx.t2_blocked);
-  test_assert (!ctx.t2_acquired);
+  // Thread 1 holds IS until we release it, so once thread 2 is on the waiter
+  // list it stays there - X is incompatible with IS
+  int held[LM_COUNT];
+  while (!lock_sample (&lock, held)) {
+    spin_pause ();
+  }
 
-  os.table->thread_join (os.self, t1.self);
-  os.table->thread_join (os.self, t2.self);
+  test_assert (atomic_load (&lctx.t1_acquired));
+  test_assert (atomic_load (&lctx.t2_blocked));
+  test_assert (!atomic_load (&lctx.t2_acquired));
 
-  test_assert (ctx.t2_acquired); // Should succeed after T1 releases
-  lock_test_ctx_destroy (&ctx);
+  // Thread 2 is parked, so it holds nothing - only thread 1's IS is granted
+  test_assert_equal (held[LM_IS], 1);
+  test_assert_equal (held[LM_X], 0);
+
+  atomic_store (&lctx.t1_release, 1);
+
+  ctx->os.table->thread_join (ctx->os.self, t1.self);
+  ctx->os.table->thread_join (ctx->os.self, t2.self);
+
+  test_assert (atomic_load (&lctx.t2_acquired)); // Should succeed after T1 releases
+
+  // Both threads released what they took
+  for (int m = 0; m < LM_COUNT; m++) {
+    test_assert_equal (lock.holder_counts[m], 0);
+  }
+
+  lock_test_ctx_destroy (&lctx);
   gr_lock_destroy (&lock);
 }
-*/
 
 TEST (gr_lock_high_pressure_random)
 {

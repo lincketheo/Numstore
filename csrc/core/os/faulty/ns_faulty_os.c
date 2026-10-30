@@ -18,12 +18,20 @@
 /// has run out, then with probability ctx->fail_percent, otherwise it
 /// forwards to the delegate OS.
 ///
-/// Every object handed out (file, thread, mutex, cond, timer) has a .self
-/// that points to a small wrapper holding the delegate's {table, self} plus a
-/// back pointer to the ctx. Object-level ops (pread, lock, now_ns...) only
-/// receive that .self, so the wrapper is the only place they can find the
-/// delegate table and the fail rate. Wrappers come from per-kind slabs and
-/// are released on close / join / free.
+/// Every object handed out (file, thread, mutex, cond) has a .self that points
+/// to a small wrapper holding the delegate's {table, self} plus a back pointer
+/// to the ctx. Object-level ops (pread, lock...) only receive that .self, so
+/// the wrapper is the only place they can find the delegate table and the fail
+/// rate. Wrappers come from per-kind slabs and are released on close / join /
+/// free.
+///
+/// Only the slots the system under test actually reaches are filled in. The
+/// rest are left NULL on purpose: a faulty wrapper nobody calls is untested
+/// code, and a NULL slot turns "this decorator never covered that op" into a
+/// crash at the call site instead of a silently unexercised wrapper. Timers
+/// are the deliberate case - a simulation reads the clock through its
+/// reliable OS, never through this one, so injecting faults there would only
+/// corrupt its own metrics.
 
 #include "core/ns_csx_assert.h"
 #include "core/ns_error.h"
@@ -48,7 +56,6 @@ struct faulty_ctx
   struct slab_alloc thread_alloc;
   struct slab_alloc mutex_alloc;
   struct slab_alloc cond_alloc;
-  struct slab_alloc timer_alloc;
 };
 
 struct faulty_file
@@ -72,12 +79,6 @@ struct faulty_mutex
 struct faulty_cond
 {
   struct i_cond      d;
-  struct faulty_ctx *ctx;
-};
-
-struct faulty_timer
-{
-  struct i_timer     d;
   struct faulty_ctx *ctx;
 };
 
@@ -119,13 +120,6 @@ DEFINE_DBG_ASSERT (struct faulty_cond, faulty_cond, c, {
   ASSERT (c->ctx);
   ASSERT (c->d.table);
   ASSERT (c->d.table == c->ctx->delegate.table);
-})
-
-DEFINE_DBG_ASSERT (struct faulty_timer, faulty_timer, t, {
-  ASSERT (t);
-  ASSERT (t->ctx);
-  ASSERT (t->d.table);
-  ASSERT (t->d.table == t->ctx->delegate.table);
 })
 
 ////////////////////////////////////////////////////////////
@@ -266,32 +260,6 @@ faulty_remove_quiet (void *os_self, const char *fname, error *e)
   return ctx->delegate.table->remove_quiet (ctx->delegate.self, fname, e);
 }
 
-static err_t
-faulty_unlink (void *os_self, const char *fname, error *e)
-{
-  struct faulty_ctx *ctx = os_self;
-  DBG_ASSERT (faulty_ctx, ctx);
-
-  if (faulty_roll (ctx, e, ERR_IO)) {
-    return error_trace (e);
-  }
-
-  return ctx->delegate.table->unlink (ctx->delegate.self, fname, e);
-}
-
-static err_t
-faulty_file_exists (void *os_self, const char *fname, bool *dest, error *e)
-{
-  struct faulty_ctx *ctx = os_self;
-  DBG_ASSERT (faulty_ctx, ctx);
-
-  if (faulty_roll (ctx, e, ERR_IO)) {
-    return error_trace (e);
-  }
-
-  return ctx->delegate.table->file_exists (ctx->delegate.self, fname, dest, e);
-}
-
 ////////////////////////////////////////////////////////////
 // File operations
 
@@ -348,19 +316,6 @@ faulty_pread_all (void *self, void *dest, const u64 n, const u64 offset, error *
 }
 
 static err_t
-faulty_write_all (void *self, const void *src, const u64 nbytes, error *e)
-{
-  struct faulty_file *f = self;
-  DBG_ASSERT (faulty_file, f);
-
-  if (faulty_roll (f->ctx, e, ERR_IO)) {
-    return error_trace (e);
-  }
-
-  return f->d.table->write_all (f->d.self, src, nbytes, e);
-}
-
-static err_t
 faulty_pwrite_all (void *self, const void *src, const u64 n, const u64 offset, error *e)
 {
   struct faulty_file *f = self;
@@ -397,19 +352,6 @@ faulty_truncate (void *self, const u64 bytes, error *e)
   }
 
   return f->d.table->truncate (f->d.self, bytes, e);
-}
-
-static err_t
-faulty_prealloc (void *self, const u64 bytes, error *e)
-{
-  struct faulty_file *f = self;
-  DBG_ASSERT (faulty_file, f);
-
-  if (faulty_roll (f->ctx, e, ERR_IO)) {
-    return error_trace (e);
-  }
-
-  return f->d.table->prealloc (f->d.self, bytes, e);
 }
 
 static i64
@@ -623,70 +565,6 @@ faulty_cond_signal (void *cond)
   c->d.table->cond_signal (c->d.self);
 }
 
-static void
-faulty_cond_broadcast (void *cond)
-{
-  struct faulty_cond *c = cond;
-  DBG_ASSERT (faulty_cond, c);
-
-  c->d.table->cond_broadcast (c->d.self);
-}
-
-////////////////////////////////////////////////////////////
-// Timers
-
-static err_t
-faulty_timer_create (void *os_self, i_timer *dest, error *e)
-{
-  struct faulty_ctx *ctx = os_self;
-  DBG_ASSERT (faulty_ctx, ctx);
-  ASSERT (dest);
-
-  if (faulty_roll (ctx, e, ERR_IO)) {
-    return error_trace (e);
-  }
-
-  struct faulty_timer *t = slab_alloc_alloc (&ctx->timer_alloc, e);
-  if (t == NULL) {
-    return error_trace (e);
-  }
-
-  if (ctx->delegate.table->timer_create (ctx->delegate.self, &t->d, e)) {
-    slab_alloc_free (&ctx->timer_alloc, t);
-    return error_trace (e);
-  }
-
-  t->ctx = ctx;
-  DBG_ASSERT (faulty_timer, t);
-
-  dest->table = &faulty_os_vtable;
-  dest->self  = t;
-
-  return SUCCESS;
-}
-
-static void
-faulty_timer_free (void *os_self, void *timer)
-{
-  struct faulty_ctx   *ctx = os_self;
-  struct faulty_timer *t   = timer;
-  DBG_ASSERT (faulty_ctx, ctx);
-  DBG_ASSERT (faulty_timer, t);
-  ASSERT (t->ctx == ctx);
-
-  t->d.table->timer_free (ctx->delegate.self, t->d.self);
-  slab_alloc_free (&ctx->timer_alloc, t);
-}
-
-static u64
-faulty_timer_now_ns (void *timer)
-{
-  struct faulty_timer *t = timer;
-  DBG_ASSERT (faulty_timer, t);
-
-  return t->d.table->timer_now_ns (t->d.self);
-}
-
 ////////////////////////////////////////////////////////////
 // Vtable
 
@@ -699,19 +577,19 @@ static const struct os_vtable faulty_os_vtable = {
 
     // File system
     .remove_quiet    = faulty_remove_quiet,
-    .unlink          = faulty_unlink,
-    .file_exists     = faulty_file_exists,
+    .unlink          = NULL, // Unused
+    .file_exists     = NULL, // Unused
 
     // File operations
     .fsync           = faulty_fsync,
     .file_size       = faulty_file_size,
     .read_all        = faulty_read_all,
     .pread_all       = faulty_pread_all,
-    .write_all       = faulty_write_all,
+    .write_all       = NULL, // Unused - writes go through pwrite / writev
     .pwrite_all      = faulty_pwrite_all,
     .writev_all      = faulty_writev_all,
     .truncate        = faulty_truncate,
-    .prealloc        = faulty_prealloc,
+    .prealloc        = NULL, // Unused
     .seek            = faulty_seek,
 
     // Threads
@@ -730,12 +608,13 @@ static const struct os_vtable faulty_os_vtable = {
     .cond_wait       = faulty_cond_wait,
     .cond_timed_wait = faulty_cond_timed_wait,
     .cond_signal     = faulty_cond_signal,
-    .cond_broadcast  = faulty_cond_broadcast,
+    .cond_broadcast  = NULL, // Unused - gr_lock wakes waiters one at a time
 
-    // Timer
-    .timer_create    = faulty_timer_create,
-    .timer_free      = faulty_timer_free,
-    .timer_now_ns    = faulty_timer_now_ns,
+    // Timer - a simulation times itself on its reliable OS, see the note at
+    // the top of this file
+    .timer_create    = NULL,
+    .timer_free      = NULL,
+    .timer_now_ns    = NULL,
 };
 
 ////////////////////////////////////////////////////////////
@@ -770,7 +649,6 @@ faulty_os_create (
   slab_alloc_init (&ctx->thread_alloc, mem, sizeof (struct faulty_thread), 10);
   slab_alloc_init (&ctx->mutex_alloc, mem, sizeof (struct faulty_mutex), 10);
   slab_alloc_init (&ctx->cond_alloc, mem, sizeof (struct faulty_cond), 10);
-  slab_alloc_init (&ctx->timer_alloc, mem, sizeof (struct faulty_timer), 10);
 
   DBG_ASSERT (faulty_ctx, ctx);
 
@@ -816,7 +694,6 @@ faulty_os_free (struct i_os os)
   slab_alloc_destroy (&ctx->thread_alloc);
   slab_alloc_destroy (&ctx->mutex_alloc);
   slab_alloc_destroy (&ctx->cond_alloc);
-  slab_alloc_destroy (&ctx->timer_alloc);
 
   // Copy out before freeing - mem lives inside ctx
   struct i_mem mem = ctx->mem;

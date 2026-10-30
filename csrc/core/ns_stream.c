@@ -555,24 +555,49 @@ stream_dyn_obuf_push (
     error         *e
 )
 {
-  (void)s; // Unused
-  struct stream_dyn_obuf_ctx *ctx  = (struct stream_dyn_obuf_ctx *)vctx;
+  struct stream_dyn_obuf_ctx *ctx = (struct stream_dyn_obuf_ctx *)vctx;
 
-  // Minimum available space
-  u32                         next = 0;
+  // [size] divides the byte counts below - a zero sized element has no
+  // meaning to a push
+  ASSERT (size > 0);
+
+  const u32 want  = size * n;
+
+  // Minimum available space - limit == 0 is the same "unbounded" sentinel
+  // stream_obuf uses for cap == 0
+  u32       avail = 0;
 
   if (ctx->limit == 0) {
-    next = size * n;
+    avail = want;
   } else {
-    next = MIN (size * n, ctx->limit - ctx->buffer.len);
+    ASSERT (ctx->buffer.len <= ctx->limit);
+    avail = MIN (want, ctx->limit - ctx->buffer.len);
+  }
+
+  // Only whole elements are appended, so the return value and the bytes
+  // that landed in the buffer always agree
+  const u32 next = avail - (avail % size);
+
+  if (next == 0) {
+    if (want > 0) {
+      stream_finish (s);
+    }
+    return 0;
   }
 
   // Do append
-  if (ext_array_insert (&ctx->buffer, ctx->buffer.len, src, n * size, e) < 0) {
+  if (ext_array_insert (&ctx->buffer, ctx->buffer.len, src, next, e) < 0) {
     return error_trace (e);
   }
 
-  return next;
+  return (i32)(next / size);
+}
+
+static void
+stream_dyn_obuf_close (void *vctx)
+{
+  struct stream_dyn_obuf_ctx *ctx = (struct stream_dyn_obuf_ctx *)vctx;
+  ext_array_free (&ctx->buffer);
 }
 
 static const struct stream_ops stream_ibuf_ops = {
@@ -590,7 +615,7 @@ static const struct stream_ops stream_obuf_ops = {
 static const struct stream_ops stream_dyn_obuf_ops = {
     .pull  = NULL,
     .push  = stream_dyn_obuf_push,
-    .close = NULL,
+    .close = stream_dyn_obuf_close,
 };
 
 void
@@ -838,15 +863,16 @@ TEST (stream_read_ibuf_to_obuf)
 #endif // TESTING
 
 /**
- * @fn void stream_obuf_init(struct stream *s, struct stream_obuf_ctx *ctx, void
- * *buf, u32 cap)
- * @brief Initializes a write-only stream that pushes into a fixed mutable byte
- * buffer.
+ * @fn void stream_dyn_obuf_init(struct stream *s, struct stream_dyn_obuf_ctx
+ * *ctx, u32 limit)
+ * @brief Initializes a write-only stream that pushes into a buffer that grows
+ * on demand.
+ *
+ * The buffer is owned by [ctx] and released by stream_close.
  *
  * @param s Stream to initialize.
  * @param ctx Context to initialize and attach.
- * @param buf Destination buffer to write into.
- * @param cap Capacity of buf in bytes.
+ * @param limit Maximum bytes the buffer may hold, or 0 for unbounded.
  */
 void
 stream_dyn_obuf_init (struct stream *s, struct stream_dyn_obuf_ctx *ctx, u32 limit)
@@ -855,3 +881,158 @@ stream_dyn_obuf_init (struct stream *s, struct stream_dyn_obuf_ctx *ctx, u32 lim
   ctx->limit  = limit;
   stream_init (s, &stream_dyn_obuf_ops, ctx);
 }
+
+#ifndef NDEBUG
+
+TEST (stream_dyn_obuf)
+{
+  TEST_CASE ("grows past any one push")
+  {
+    struct stream              s;
+    struct stream_dyn_obuf_ctx sctx;
+
+    stream_dyn_obuf_init (&s, &sctx, 0);
+
+    u8 chunk[64];
+    for (u32 i = 0; i < sizeof (chunk); i++) {
+      chunk[i] = (u8)i;
+    }
+
+    // Four pushes of 64 bytes each - the backing ext_array starts empty, so
+    // every one of them has to reallocate or double
+    for (u32 round = 0; round < 4; round++) {
+      i32 put = stream_bwrite (chunk, 1, sizeof (chunk), &s, &ctx->e);
+      test_assert_int_equal (put, (i32)sizeof (chunk));
+    }
+
+    test_assert_int_equal ((i32)sctx.buffer.len, 4 * (i32)sizeof (chunk));
+    for (u32 round = 0; round < 4; round++) {
+      test_assert_memequal (sctx.buffer.data + (round * sizeof (chunk)), chunk, sizeof (chunk));
+    }
+
+    // Unbounded: never finishes on its own
+    test_assert (!stream_isdone (&s));
+
+    stream_close (&s);
+  }
+
+  TEST_CASE ("limit clamps the last push then exhausts")
+  {
+    struct stream              s;
+    struct stream_dyn_obuf_ctx sctx;
+
+    stream_dyn_obuf_init (&s, &sctx, 5);
+
+    const u8 chunk1[2] = {1, 2};
+    const u8 chunk2[2] = {3, 4};
+    const u8 chunk3[2] = {5, 6}; // only 1 byte of the limit remains
+
+    i32      put       = stream_bwrite (chunk1, 1, 2, &s, &ctx->e);
+    test_assert_int_equal (put, 2);
+
+    put = stream_bwrite (chunk2, 1, 2, &s, &ctx->e);
+    test_assert_int_equal (put, 2);
+
+    put = stream_bwrite (chunk3, 1, 2, &s, &ctx->e);
+    test_assert_int_equal (put, 1);
+
+    // One more push to notice the buffer is full, same as stream_obuf
+    test_assert (!stream_isdone (&s));
+    put = stream_bwrite (chunk3, 1, 2, &s, &ctx->e);
+    test_assert_int_equal (put, 0);
+    test_assert (stream_isdone (&s));
+
+    const u8 expected[5] = {1, 2, 3, 4, 5};
+    test_assert_int_equal ((i32)sctx.buffer.len, 5);
+    test_assert_memequal (sctx.buffer.data, expected, sizeof (expected));
+
+    stream_close (&s);
+  }
+
+  TEST_CASE ("limit only admits whole elements")
+  {
+    // 10 bytes of limit, 4 byte elements: the third element does not fit, so
+    // the push reports 2 and leaves 8 bytes behind - never a torn element
+    struct stream              s;
+    struct stream_dyn_obuf_ctx sctx;
+
+    stream_dyn_obuf_init (&s, &sctx, 10);
+
+    const u32 src[3] = {0x11111111, 0x22222222, 0x33333333};
+
+    i32       put    = stream_bwrite (src, sizeof (u32), 3, &s, &ctx->e);
+
+    test_assert_int_equal (put, 2);
+    test_assert_int_equal ((i32)sctx.buffer.len, 2 * (i32)sizeof (u32));
+    test_assert_memequal (sctx.buffer.data, src, 2 * sizeof (u32));
+
+    // 2 bytes of limit are left over and no element can ever use them
+    put = stream_bwrite (src, sizeof (u32), 3, &s, &ctx->e);
+    test_assert_int_equal (put, 0);
+    test_assert (stream_isdone (&s));
+
+    stream_close (&s);
+  }
+
+  TEST_CASE ("zero n request does not finish")
+  {
+    struct stream              s;
+    struct stream_dyn_obuf_ctx sctx;
+
+    stream_dyn_obuf_init (&s, &sctx, 4);
+
+    const u8 chunk[1] = {7};
+
+    i32      put      = stream_bwrite (chunk, 1, 0, &s, &ctx->e);
+
+    test_assert_int_equal (put, 0);
+    test_assert (!stream_isdone (&s));
+    test_assert_int_equal ((i32)sctx.buffer.len, 0);
+
+    stream_close (&s);
+  }
+
+  TEST_CASE ("drains a real ibuf source")
+  {
+    const u8               data[6] = {1, 2, 3, 4, 5, 6};
+
+    struct stream          ibuf_s;
+    struct stream_ibuf_ctx ibuf_ctx;
+    stream_ibuf_init (&ibuf_s, &ibuf_ctx, data, sizeof (data));
+
+    struct stream              s;
+    struct stream_dyn_obuf_ctx sctx;
+    stream_dyn_obuf_init (&s, &sctx, 0);
+
+    i32 total = stream_read (&s, 1, sizeof (data), &ibuf_s, &ctx->e);
+
+    test_assert_int_equal (total, (i32)sizeof (data));
+    test_assert_int_equal ((i32)sctx.buffer.len, (i32)sizeof (data));
+    test_assert_memequal (sctx.buffer.data, data, sizeof (data));
+
+    stream_close (&s);
+  }
+
+  TEST_CASE ("close releases the buffer and is safe twice")
+  {
+    struct stream              s;
+    struct stream_dyn_obuf_ctx sctx;
+
+    stream_dyn_obuf_init (&s, &sctx, 0);
+
+    const u8 chunk[4] = {1, 2, 3, 4};
+    test_assert_int_equal (stream_bwrite (chunk, 1, 4, &s, &ctx->e), 4);
+    test_assert (sctx.buffer.data != NULL);
+
+    stream_close (&s);
+    test_assert_ptr_equal (sctx.buffer.data, NULL);
+    test_assert_int_equal ((i32)sctx.buffer.len, 0);
+
+    // ext_array_free leaves the array in the created state, so closing
+    // again has nothing to release
+    stream_close (&s);
+    test_assert_ptr_equal (sctx.buffer.data, NULL);
+  }
+}
+
+#endif // TESTING

@@ -232,3 +232,118 @@ walis_crash (struct wal_istream *w, error *e)
   w->mem.table->free (w->mem.self, w);
   return error_trace (e);
 }
+
+#ifndef NDEBUG
+
+#  define WALIS_CRASH_T_FILE "walis_crash_t.wal"
+
+/// Writes [len] bytes of [src] as the whole contents of the test wal
+static void
+walis_test_seed (struct test_ctx *ctx, const void *src, const u32 len)
+{
+  ctx->os.table->remove_quiet (ctx->os.self, WALIS_CRASH_T_FILE, &ctx->e);
+
+  i_file f;
+  test_assert_int_equal (
+      ctx->os.table->open_file_w (ctx->os.self, &f, WALIS_CRASH_T_FILE, &ctx->e),
+      SUCCESS
+  );
+  test_assert_int_equal (f.table->write_all (f.self, src, len, &ctx->e), SUCCESS);
+  test_assert_int_equal (ctx->os.table->close_file (ctx->os.self, f.self, &ctx->e), SUCCESS);
+}
+
+/// walis_crash abandons a reader mid-stream: it has to release the file
+/// handle and the allocation (a leaked fd trips the OS teardown assert in
+/// test_ctx_free) and, unlike the writer's crash, it must not be able to
+/// damage the log it was reading.
+TEST (walis_crash)
+{
+  const u8 payload[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+
+  TEST_CASE ("crashing part way through a record leaves the log alone")
+  {
+    walis_test_seed (ctx, payload, sizeof payload);
+
+    struct wal_istream *wis = walis_open (WALIS_CRASH_T_FILE, ctx->mem, ctx->os, &ctx->e);
+    test_assert (wis != NULL);
+
+    // Read the first half of a record and die before marking its end, so the
+    // committed lsn is still 0 while 4 bytes have been consumed
+    walis_mark_start_log (wis);
+
+    bool iseof    = true;
+    lsn  rlsn     = 1;
+    u32  checksum = 0;
+    u8   buf[4]   = {0};
+
+    test_assert_int_equal (
+        walis_read_all (wis, &iseof, &rlsn, &checksum, buf, sizeof buf, &ctx->e),
+        SUCCESS
+    );
+    test_assert (!iseof);
+    test_assert_int_equal ((i32)rlsn, 0);
+    test_assert_memequal (buf, payload, sizeof buf);
+
+    test_assert_int_equal (walis_crash (wis, &ctx->e), SUCCESS);
+
+    // The reader held the only handle and it opened read only, so every byte
+    // is still there for the next reader
+    i_file f;
+    test_assert_int_equal (
+        ctx->os.table->open_file_r (ctx->os.self, &f, WALIS_CRASH_T_FILE, &ctx->e),
+        SUCCESS
+    );
+    test_assert_int_equal ((i32)f.table->file_size (f.self, &ctx->e), (i32)sizeof payload);
+    ctx->os.table->close_file (ctx->os.self, f.self, &ctx->e);
+
+    ctx->os.table->remove_quiet (ctx->os.self, WALIS_CRASH_T_FILE, &ctx->e);
+  }
+
+  TEST_CASE ("a fresh reader starts over from the top")
+  {
+    walis_test_seed (ctx, payload, sizeof payload);
+
+    struct wal_istream *wis = walis_open (WALIS_CRASH_T_FILE, ctx->mem, ctx->os, &ctx->e);
+    test_assert (wis != NULL);
+
+    bool iseof  = true;
+    u8   buf[4] = {0};
+    walis_mark_start_log (wis);
+    test_assert_int_equal (
+        walis_read_all (wis, &iseof, NULL, NULL, buf, sizeof buf, &ctx->e),
+        SUCCESS
+    );
+    walis_mark_end_log (wis);
+    test_assert_int_equal (walis_crash (wis, &ctx->e), SUCCESS);
+
+    // No read position is persisted anywhere, so the replacement reader sees
+    // the log from byte 0 again - the whole of it, in one read this time
+    wis = walis_open (WALIS_CRASH_T_FILE, ctx->mem, ctx->os, &ctx->e);
+    test_assert (wis != NULL);
+
+    u8 all[8] = {0};
+    walis_mark_start_log (wis);
+    test_assert_int_equal (
+        walis_read_all (wis, &iseof, NULL, NULL, all, sizeof all, &ctx->e),
+        SUCCESS
+    );
+    test_assert (!iseof);
+    test_assert_memequal (all, payload, sizeof payload);
+
+    test_assert_int_equal (walis_close (wis, &ctx->e), SUCCESS);
+    ctx->os.table->remove_quiet (ctx->os.self, WALIS_CRASH_T_FILE, &ctx->e);
+  }
+
+  TEST_CASE ("crashing straight after open")
+  {
+    walis_test_seed (ctx, payload, sizeof payload);
+
+    struct wal_istream *wis = walis_open (WALIS_CRASH_T_FILE, ctx->mem, ctx->os, &ctx->e);
+    test_assert (wis != NULL);
+    test_assert_int_equal (walis_crash (wis, &ctx->e), SUCCESS);
+
+    ctx->os.table->remove_quiet (ctx->os.self, WALIS_CRASH_T_FILE, &ctx->e);
+  }
+}
+
+#endif // TESTING

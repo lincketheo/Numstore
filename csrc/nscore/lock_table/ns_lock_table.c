@@ -139,14 +139,6 @@ frame_unref_unsafe (struct lockt *t, struct lockt_frame *frame)
   }
 }
 
-static void
-frame_unref_safe (struct lockt *t, struct lockt_frame *frame)
-{
-  latch_lock (&t->l);
-  frame_unref_unsafe (t, frame);
-  latch_unlock (&t->l);
-}
-
 err_t
 lockt_init (struct lockt *t, struct i_mem mem, const struct i_os os, error *e)
 {
@@ -262,7 +254,9 @@ lockt_lock_once (
   if (gr_lock (&frame->lock, mode, e) != SUCCESS) {
     // This race is hard to test - between locking, and unreffing
     // but seems fine
-    frame_unref_safe (t, frame);
+    latch_lock (&t->l);
+    frame_unref_unsafe (t, frame);
+    latch_unlock (&t->l);
     return error_trace (e);
   }
 

@@ -98,7 +98,7 @@ lmalloc (struct lalloc *a, const u32 req, const u32 size, error *e)
   }
 
   const u32 avail = a->limit - a->used;
-  if (avail <= total) {
+  if (avail < total) {
     error_causef (e, ERR_NOMEM, "linear alloc %d bytes: only %d remaining", total, avail);
     latch_unlock (&a->latch);
     return NULL;
@@ -157,7 +157,7 @@ arena_alloc_assert (const struct arena_alloc *ca)
   ASSERT (ca->head != NULL || ca->num_chunks == 0);
   ASSERT (ca->total_used <= ca->total_allocated);
   ASSERT (ca->settings.max_total_size == 0 || ca->total_allocated <= ca->settings.max_total_size);
-  ASSERT (ca->settings.max_chunks == 0 || ca->num_chunks < ca->settings.max_chunks);
+  ASSERT (ca->settings.max_chunks == 0 || ca->num_chunks <= ca->settings.max_chunks);
 
   u32 counted_chunks    = 0;
   u32 counted_allocated = 0;
@@ -193,7 +193,7 @@ chunk_create (const u32 size, struct i_mem mem, error *e)
   return ret;
 }
 
-static void
+void
 arena_alloc_create (struct arena_alloc *dest, const struct arena_alloc_settings settings)
 {
   ASSERT (settings.target_chunk_mult >= 1.0f);
@@ -494,6 +494,25 @@ TEST (arena_malloc_refuses_past_its_limits)
     arena_alloc_free_all (&a);
   }
 
+  TEST_CASE ("an allocation that exactly fills a chunk is accepted")
+  {
+    struct arena_alloc          a;
+    struct arena_alloc_settings st = test_settings (ctx->mem);
+    st.target_chunk_mult           = 1;
+    st.min_chunk_size              = 1;
+    arena_alloc_create (&a, st);
+
+    void *exact = arena_malloc (&a, 32, 1, &ctx->e);
+    test_assert (exact != NULL);
+    test_assert_int_equal (a.total_allocated, 32);
+
+    // And the chunk really is full now, so the next byte needs a second chunk.
+    test_assert (arena_malloc (&a, 1, 1, &ctx->e) != NULL);
+    test_assert_int_equal (a.num_chunks, 2);
+
+    arena_alloc_free_all (&a);
+  }
+
   TEST_CASE ("a new chunk would push past max_total_size")
   {
     struct arena_alloc          a;
@@ -539,17 +558,7 @@ TEST (arena_malloc_refuses_past_its_limits)
   }
 }
 
-/// max_chunks = N should mean "N chunks, then refuse". Three sites disagree on
-/// whether the bound is inclusive:
-///
-///   :160  ASSERT (num_chunks <  max_chunks)   exclusive
-///   :173  ASSERT (counted    <= max_chunks)   inclusive
-///   :319  if     (num_chunks >= max_chunks)   inclusive
-///
-/// Allocating the Nth chunk passes 319 and 173, then trips 160 on the next
-/// DBG_ASSERT, so any non-zero max_chunks aborts once the budget is really
-/// used. Fix: make 160 inclusive.
-TEST_DISABLED (arena_malloc_respects_max_chunks)
+TEST (arena_malloc_respects_max_chunks)
 {
   struct arena_alloc          a;
   struct arena_alloc_settings st = test_settings (ctx->mem);
@@ -559,8 +568,6 @@ TEST_DISABLED (arena_malloc_respects_max_chunks)
   st.max_chunks                  = 2;
   arena_alloc_create (&a, st);
 
-  // lmalloc refuses a request that would use the chunk's last byte, so a
-  // 16 byte chunk holds at most 15 and each request needs its own chunk.
   test_assert (arena_malloc (&a, 15, 1, &ctx->e) != NULL);
   test_assert (arena_malloc (&a, 15, 1, &ctx->e) != NULL);
   test_assert_int_equal (a.num_chunks, 2);

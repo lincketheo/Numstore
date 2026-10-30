@@ -66,14 +66,10 @@ build/docs/CMakeCache.txt:
 
 
 ############ Code Coverage
-# apps/ is the two entry points plus the generated unit_tests.c; samples/ is
-# documentation. Neither is library code, so neither belongs in the ratio.
-GCOVR = gcovr -r . build/coverage \
-	--gcov-ignore-parse-errors negative_hits.warn_once_per_file \
-	--exclude apps \
-	--exclude samples \
-	--exclude build \
-	--print-summary
+# Filters and the assert/harness exclusions live in gcovr.cfg - see that file
+# for what is left out of the ratio and why. The search path stays here
+# because it is the one thing a CI job might point somewhere else.
+GCOVR = gcovr --config gcovr.cfg build/coverage --print-summary
 
 .PHONY: coverage
 coverage: build/coverage/html/index.html

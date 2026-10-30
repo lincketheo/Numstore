@@ -15,6 +15,7 @@
 #include "nscore/types/ns_sarray_t.h"
 
 #include "core/ns_arena_alloc.h"
+#include "core/ns_bounds.h"
 #include "core/ns_csx_assert.h"
 #include "core/ns_error.h"
 #include "core/ns_numerics.h"
@@ -224,11 +225,11 @@ sarray_t_get_serial_size (u16 *dest, const struct sarray_t *t, error *e)
 
   // RANK DIM0 DIM1 DIM2 ... TYPE
   u16 ret = sizeof (u16);
-  WRAP (safe_add_mul_u16 (&ret, sizeof (u32), t->rank, e));
+  WRAP (safe_add_mul_u16_err (&ret, sizeof (u32), t->rank, e));
 
   u16 sub_size;
   WRAP (type_get_serial_size (&sub_size, t->t, e));
-  WRAP (safe_add_u16 (&ret, sub_size, e));
+  WRAP (safe_add_u16_err (&ret, sub_size, e));
 
   *dest = ret;
 
@@ -416,6 +417,55 @@ TEST (sarray_t_deserialize_red_path)
 }
 #endif
 
+#ifndef NDEBUG
+TEST (sarray_t_deserialize_early_termination)
+{
+  TEST_CASE ("Truncated rank")
+  {
+    u8                  data[] = {0}; // One byte of a two byte rank
+    struct deserializer d      = dsrlizr_create (data, sizeof (data));
+
+    struct sarray_t     sret   = {0};
+    test_err_t_check (sarray_t_deserialize (&sret, &d, &ctx->alloc, &ctx->e), ERR_CORRUPT, &ctx->e);
+
+    arena_alloc_free_all (&ctx->alloc);
+  }
+
+  TEST_CASE ("Truncated dimension")
+  {
+    // rank = 2, then three of the eight dimension bytes
+    u8  data[] = {0, 0, 0, 0, 0};
+    u16 rank   = 2;
+    memcpy (data, &rank, sizeof rank);
+
+    struct deserializer d    = dsrlizr_create (data, sizeof (data));
+
+    struct sarray_t     sret = {0};
+    test_err_t_check (sarray_t_deserialize (&sret, &d, &ctx->alloc, &ctx->e), ERR_CORRUPT, &ctx->e);
+
+    arena_alloc_free_all (&ctx->alloc);
+  }
+
+  TEST_CASE ("Dimensions complete, type missing")
+  {
+    // rank = 1, dim0 = 10, and nothing where the element type should be
+    u8  data[] = {0, 0, 0, 0, 0, 0};
+    u16 rank   = 1;
+    u32 d0     = 10;
+    memcpy (data, &rank, sizeof rank);
+    memcpy (data + 2, &d0, sizeof d0);
+
+    struct deserializer d    = dsrlizr_create (data, sizeof (data));
+
+    struct sarray_t     sret = {0};
+    test_assert (sarray_t_deserialize (&sret, &d, &ctx->alloc, &ctx->e) != SUCCESS);
+    error_reset (&ctx->e);
+
+    arena_alloc_free_all (&ctx->alloc);
+  }
+}
+#endif
+
 err_t
 sarray_t_random (
     struct sarray_t    *sa,
@@ -436,11 +486,6 @@ sarray_t_random (
 
   for (u16 i = 0; i < sa->rank; ++i) {
     sa->dims[i] = randu32r (1, 11);
-  }
-
-  sa->t = (struct type *)arena_malloc (temp, 1, sizeof (struct type), e);
-  if (!sa->t) {
-    return error_trace (e);
   }
 
   sa->t = type_random (temp, depth - 1, max_tsize, e);

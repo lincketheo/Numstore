@@ -334,49 +334,19 @@ TEST (pager_open)
   }
 }
 
-// pgr_open takes a file, a WAL, a lock table, a dirty-page table, a
-// transaction table and a checkpoint task, in that order. Failing the Nth
-// allocation walks the unwind block one resource at a time.
-//
-// test_ctx_free is the other half of the assertion: it fails the test if the
-// unwind left a file open or a thread unjoined.
-// DISABLED: budget 3 lands inside wal_init and aborts the process on a double
-// free, so the sweep cannot run past it.
-//
-// CAUSE:
-//   Every failure path in wal_init (ns_wal.c) frees the name buffer it was
-//   handed --
-//
-//     dest->mem.table->free (dest->mem.self, (char *)dest->fname.data);
-//
-//   -- and then wal_open_internal frees the same pointer again on the way out:
-//
-//     if (wal_init (dest, e)) {
-//       mem.table->free (mem.self, (char *)dest->fname.data);   // already gone
-//       mem.table->free (mem.self, dest);
-//
-//   fname.data is allocated by wal_open_internal (string_copy), so the frees
-//   inside wal_init are the wrong ones. Fix: drop the four fname.data frees in
-//   wal_init and leave ownership with wal_open_internal.
-//
-//   Reachable from any wal_init failure, so a faulty OS triggers it just as a
-//   faulty allocator does.
-TEST_DISABLED (pgr_open_unwinds_on_allocation_failure)
+TEST (pgr_open_unwinds_on_allocation_failure)
 {
-  enum
-  {
-    // Past the last allocation pgr_open makes, so the tail budgets also cover
-    // the fully-successful open.
-    max_budget = 24
-  };
+  int  attempts = 0;
+  bool opened   = false;
+#  define PGR_OPEN_MAX_ATTEMPTS 64
 
-  for (int budget = 0; budget < max_budget; ++budget) {
-    TEST_CASE ("malloc budget %d", budget)
+  while (attempts < PGR_OPEN_MAX_ATTEMPTS && !opened) {
+    TEST_CASE ("malloc fail_after %d", attempts)
     {
       test_fail_if (pgr_delete_single_file ("testdb", ctx->os, &ctx->e));
 
       faulty_mem_reset (ctx->faulty_mem);
-      faulty_mem_fail_after (ctx->faulty_mem, budget);
+      faulty_mem_fail_after (ctx->faulty_mem, attempts);
 
       struct pager *p = pgr_open ("testdb", ctx->faulty_mem, ctx->os, &ctx->e);
 
@@ -384,15 +354,21 @@ TEST_DISABLED (pgr_open_unwinds_on_allocation_failure)
         test_assert (ctx->e.cause_code < 0);
         error_reset (&ctx->e);
       } else {
+        opened = true;
         test_assert_int_equal (ctx->e.cause_code, SUCCESS);
-        // Closing must not be starved by a budget that never fired.
+        // Closing must not be starved by a fail_after that never fired.
         faulty_mem_reset (ctx->faulty_mem);
         test_fail_if (pgr_close (p, &ctx->e));
       }
     }
+
+    attempts++;
   }
 
+  test_assert (opened);
+
   test_fail_if (pgr_delete_single_file ("testdb", ctx->os, &ctx->e));
+#  undef PGR_OPEN_MAX_ATTEMPTS
 }
 
 static u32

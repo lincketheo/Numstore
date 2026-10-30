@@ -15,6 +15,7 @@
 #include "nscore/types/ns_union_t.h"
 
 #include "core/ns_arena_alloc.h"
+#include "core/ns_bounds.h"
 #include "core/ns_csx_assert.h"
 #include "core/ns_error.h"
 #include "core/ns_numerics.h"
@@ -419,12 +420,12 @@ union_t_get_serial_size (u16 *dest, const struct union_t *t, error *e)
   u16 ret = sizeof (u16);
 
   for (u16 i = 0; i < t->len; ++i) {
-    WRAP (safe_add_u16 (&ret, sizeof (u16), e));
-    WRAP (safe_add_u16 (&ret, t->keys[i].len, e));
+    WRAP (safe_add_u16_err (&ret, sizeof (u16), e));
+    WRAP (safe_add_u16_err (&ret, t->keys[i].len, e));
 
     u16 sub_size;
     WRAP (type_get_serial_size (&sub_size, t->types[i], e));
-    WRAP (safe_add_u16 (&ret, sub_size, e));
+    WRAP (safe_add_u16_err (&ret, sub_size, e));
   }
 
   *dest = ret;
@@ -718,6 +719,75 @@ TEST (union_t_deserialize_red_path)
 
   test_assert_int_equal (ret, ERR_INTERP); // Duplicate
   arena_alloc_free_all (&ctx->alloc);
+}
+#endif
+
+#ifndef NDEBUG
+// The early_termination label: the buffer runs out mid-field. Each case stops
+// at a different read, so a short buffer is reported as corrupt rather than
+// built out of whatever the partial read left behind.
+TEST (union_t_deserialize_early_termination)
+{
+  TEST_CASE ("Truncated length")
+  {
+    u8                  data[] = {0}; // One byte of a two byte length
+    struct deserializer d      = dsrlizr_create (data, sizeof (data));
+
+    struct union_t      sret   = {0};
+    test_err_t_check (union_t_deserialize (&sret, &d, &ctx->alloc, &ctx->e), ERR_CORRUPT, &ctx->e);
+
+    arena_alloc_free_all (&ctx->alloc);
+  }
+
+  TEST_CASE ("Truncated key length")
+  {
+    // len = 1, then one byte of the two byte key length
+    u8  data[] = {0, 0, 0};
+    u16 len    = 1;
+    memcpy (data, &len, sizeof len);
+
+    struct deserializer d    = dsrlizr_create (data, sizeof (data));
+
+    struct union_t      sret = {0};
+    test_err_t_check (union_t_deserialize (&sret, &d, &ctx->alloc, &ctx->e), ERR_CORRUPT, &ctx->e);
+
+    arena_alloc_free_all (&ctx->alloc);
+  }
+
+  TEST_CASE ("Truncated key data")
+  {
+    // len = 1, klen = 3, but only two bytes of the key itself
+    u8  data[] = {0, 0, 0, 0, 'f', 'o'};
+    u16 len    = 1;
+    u16 klen   = 3;
+    memcpy (data, &len, sizeof len);
+    memcpy (data + 2, &klen, sizeof klen);
+
+    struct deserializer d    = dsrlizr_create (data, sizeof (data));
+
+    struct union_t      sret = {0};
+    test_err_t_check (union_t_deserialize (&sret, &d, &ctx->alloc, &ctx->e), ERR_CORRUPT, &ctx->e);
+
+    arena_alloc_free_all (&ctx->alloc);
+  }
+
+  TEST_CASE ("Key complete, sub type missing")
+  {
+    // len = 1, klen = 3, "foo", and nothing where the sub type should be
+    u8  data[] = {0, 0, 0, 0, 'f', 'o', 'o'};
+    u16 len    = 1;
+    u16 klen   = 3;
+    memcpy (data, &len, sizeof len);
+    memcpy (data + 2, &klen, sizeof klen);
+
+    struct deserializer d    = dsrlizr_create (data, sizeof (data));
+
+    struct union_t      sret = {0};
+    test_assert (union_t_deserialize (&sret, &d, &ctx->alloc, &ctx->e) != SUCCESS);
+    error_reset (&ctx->e);
+
+    arena_alloc_free_all (&ctx->alloc);
+  }
 }
 #endif
 

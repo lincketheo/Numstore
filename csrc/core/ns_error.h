@@ -74,9 +74,8 @@ void error_unsilence (error *e);
 err_t error_causef (error *e, err_t c, const char *fmt, ...) PRINTF_ATTR (3, 4);
 void error_log_consume (error *e);
 
-#define error_trace(e)                                                               \
-  (e)->cause_code < 0 ? error_causef (e, (e)->cause_code, FPREFIX_STR, FPREFIX_ARGS) \
-                      : (e)->cause_code
+err_t error_trace_at (error *e, const char *file, int line, const char *func);
+#define error_trace(e) error_trace_at ((e), FPREFIX_ARGS)
 
 #define WRAP(expr)                     \
   do {                                 \

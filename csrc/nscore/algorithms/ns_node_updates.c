@@ -327,6 +327,147 @@ TEST (nupd_init)
 
 #endif
 
+#ifndef NDEBUG
+// create_from is push-based, not append-based: it lays the entries down as
+// given, so a left entry whose pg equals the pivot's is a real entry and not
+// an update to the pivot (which is what append_left would have made it).
+TEST (nupd_create_from)
+{
+  TEST_CASE ("Copies left, pivot and right")
+  {
+    struct in_pair       left[]  = {{.pg = 10, .key = 100}, {.pg = 11, .key = 101}};
+    const struct in_pair pivot   = {.pg = 20, .key = 200};
+    struct in_pair       right[] = {
+        {.pg = 30, .key = 300},
+        {.pg = 31, .key = 301},
+        {.pg = 32, .key = 302}
+    };
+
+    struct node_updates *n = nupd_create_from (left, 2, pivot, right, 3, ctx->mem, &ctx->e);
+    test_assert (n != NULL);
+
+    test_assert_equal (n->pivot.pg, 20);
+    test_assert_equal (n->pivot.key, 200);
+
+    test_assert_equal (n->llen, 2);
+    for (u32 i = 0; i < 2; ++i) {
+      test_assert_equal (nupd_get_left (n, i)->pg, left[i].pg);
+      test_assert_equal (nupd_get_left (n, i)->key, left[i].key);
+    }
+
+    test_assert_equal (n->rlen, 3);
+    for (u32 i = 0; i < 3; ++i) {
+      test_assert_equal (nupd_get_right (n, i)->pg, right[i].pg);
+      test_assert_equal (nupd_get_right (n, i)->key, right[i].key);
+    }
+
+    // Nothing has been observed or consumed yet
+    test_assert_equal (n->lobs, 0);
+    test_assert_equal (n->robs, 0);
+    test_assert_equal (n->lcons, 0);
+    test_assert_equal (n->rcons, 0);
+
+    nupd_free (n);
+  }
+
+  TEST_CASE ("Empty sides leave only the pivot")
+  {
+    const struct in_pair pivot = {.pg = 20, .key = 200};
+
+    struct node_updates *n     = nupd_create_from (NULL, 0, pivot, NULL, 0, ctx->mem, &ctx->e);
+    test_assert (n != NULL);
+
+    test_assert_equal (n->pivot.pg, 20);
+    test_assert_equal (n->pivot.key, 200);
+    test_assert_equal (n->llen, 0);
+    test_assert_equal (n->rlen, 0);
+
+    nupd_free (n);
+  }
+
+  TEST_CASE ("A side longer than one slab spills into the chain")
+  {
+    const u32       llen = NUPD_LENGTH + 3;
+    struct in_pair *left = ctx->mem.table->malloc (ctx->mem.self, llen, sizeof *left, &ctx->e);
+    test_assert (left != NULL);
+    for (u32 i = 0; i < llen; ++i) {
+      left[i] = in_pair_from (1000 + i, 2000 + i);
+    }
+
+    const struct in_pair pivot = {.pg = 20, .key = 200};
+
+    struct node_updates *n     = nupd_create_from (left, llen, pivot, NULL, 0, ctx->mem, &ctx->e);
+    test_assert (n != NULL);
+
+    test_assert_equal (n->llen, llen);
+    test_assert_equal (nupd_get_left (n, 0)->pg, 1000);
+    test_assert_equal (nupd_get_left (n, NUPD_LENGTH)->pg, 1000 + NUPD_LENGTH);
+    test_assert_equal (nupd_get_left (n, llen - 1)->pg, 1000 + llen - 1);
+
+    nupd_free (n);
+    ctx->mem.table->free (ctx->mem.self, left);
+  }
+
+  TEST_CASE ("A left entry on the pivot page stays a separate entry")
+  {
+    struct in_pair       left[] = {{.pg = 20, .key = 999}};
+    const struct in_pair pivot  = {.pg = 20, .key = 200};
+
+    struct node_updates *n      = nupd_create_from (left, 1, pivot, NULL, 0, ctx->mem, &ctx->e);
+    test_assert (n != NULL);
+
+    test_assert_equal (n->pivot.key, 200); // Not folded into the pivot
+    test_assert_equal (n->llen, 1);
+    test_assert_equal (nupd_get_left (n, 0)->key, 999);
+
+    nupd_free (n);
+  }
+
+  TEST_CASE ("A failed node allocation returns NULL")
+  {
+    struct in_pair       left[] = {{.pg = 10, .key = 100}};
+    const struct in_pair pivot  = {.pg = 20, .key = 200};
+
+    faulty_mem_reset (ctx->faulty_mem);
+    faulty_mem_fail_after (ctx->faulty_mem, 0);
+
+    test_assert_ptr_equal (
+        nupd_create_from (left, 1, pivot, NULL, 0, ctx->faulty_mem, &ctx->e),
+        NULL
+    );
+    error_reset (&ctx->e);
+
+    faulty_mem_reset (ctx->faulty_mem);
+  }
+
+  TEST_CASE ("A failed slab allocation frees the partial result")
+  {
+    // The head slab is embedded, so only a side that spills needs memory: the
+    // node's own calloc goes through and the first slab malloc does not.
+    const u32       llen = NUPD_LENGTH + 1;
+    struct in_pair *left = ctx->mem.table->malloc (ctx->mem.self, llen, sizeof *left, &ctx->e);
+    test_assert (left != NULL);
+    for (u32 i = 0; i < llen; ++i) {
+      left[i] = in_pair_from (1000 + i, 2000 + i);
+    }
+
+    const struct in_pair pivot = {.pg = 20, .key = 200};
+
+    faulty_mem_reset (ctx->faulty_mem);
+    faulty_mem_fail_after (ctx->faulty_mem, 1);
+
+    test_assert_ptr_equal (
+        nupd_create_from (left, llen, pivot, NULL, 0, ctx->faulty_mem, &ctx->e),
+        NULL
+    );
+    error_reset (&ctx->e);
+
+    faulty_mem_reset (ctx->faulty_mem);
+    ctx->mem.table->free (ctx->mem.self, left);
+  }
+}
+#endif
+
 static struct in_pair *
 nupd_append_right (struct node_updates *s, const pgno pg, const b_size size, error *e)
 {
@@ -604,6 +745,130 @@ nupd_append_2nd_left (
   }
   return SUCCESS;
 }
+
+#ifndef NDEBUG
+TEST (nupd_append_2nd_left)
+{
+  TEST_CASE ("With no pending prev, both entries are appended")
+  {
+    struct node_updates *n = nupd_init (100, 512, ctx->mem, &ctx->e);
+    n->prev                = NULL;
+
+    test_assert_int_equal (nupd_append_2nd_left (n, 50, 256, 40, 128, &ctx->e), SUCCESS);
+
+    test_assert_equal (n->llen, 2);
+    test_assert_equal (nupd_get_left (n, 0)->pg, 50);
+    test_assert_equal (nupd_get_left (n, 0)->key, 256);
+    test_assert_equal (nupd_get_left (n, 1)->pg, 40);
+    test_assert_equal (nupd_get_left (n, 1)->key, 128);
+    test_assert_equal (n->rlen, 0);
+
+    // prev is left pointing at the first of the two
+    test_assert_ptr_equal (n->prev, nupd_get_left (n, 0));
+
+    nupd_free (n);
+  }
+
+  TEST_CASE ("A pending prev is reused, so only the second is appended")
+  {
+    struct node_updates *n = nupd_init (100, 512, ctx->mem, &ctx->e);
+
+    // nupd_init leaves prev pointing at the pivot
+    test_assert_ptr_equal (n->prev, &n->pivot);
+
+    test_assert_int_equal (nupd_append_2nd_left (n, 100, 256, 40, 128, &ctx->e), SUCCESS);
+
+    // pg1 matched the pending prev, so it did not become a new entry - and its
+    // size1 is ignored, the pending entry already carries its own key
+    test_assert_equal (n->pivot.key, 512);
+    test_assert_equal (n->llen, 1);
+    test_assert_equal (nupd_get_left (n, 0)->pg, 40);
+    test_assert_equal (nupd_get_left (n, 0)->key, 128);
+
+    nupd_free (n);
+  }
+
+  TEST_CASE ("pg1 on the pivot page with nothing stored updates the pivot")
+  {
+    struct node_updates *n = nupd_init (100, 512, ctx->mem, &ctx->e);
+    n->prev                = NULL;
+
+    test_assert_int_equal (nupd_append_2nd_left (n, 100, 256, 40, 128, &ctx->e), SUCCESS);
+
+    test_assert_equal (n->pivot.key, 256); // append_left folded pg1 into the pivot
+    test_assert_ptr_equal (n->prev, &n->pivot);
+    test_assert_equal (n->llen, 1);
+    test_assert_equal (nupd_get_left (n, 0)->pg, 40);
+
+    nupd_free (n);
+  }
+
+  TEST_CASE ("Repeated calls keep stacking away from the pivot")
+  {
+    struct node_updates *n = nupd_init (100, 512, ctx->mem, &ctx->e);
+    n->prev                = NULL;
+
+    test_assert_int_equal (nupd_append_2nd_left (n, 50, 256, 40, 128, &ctx->e), SUCCESS);
+    n->prev = NULL;
+    test_assert_int_equal (nupd_append_2nd_left (n, 30, 64, 20, 32, &ctx->e), SUCCESS);
+
+    test_assert_equal (n->llen, 4);
+    test_assert_equal (nupd_get_left (n, 2)->pg, 30);
+    test_assert_equal (nupd_get_left (n, 3)->pg, 20);
+
+    nupd_free (n);
+  }
+
+  // The head slab is embedded, so only a push that spills past NUPD_LENGTH
+  // allocates - which is where an injected fault has to land.
+  TEST_CASE ("A failed allocation on the first entry is surfaced")
+  {
+    struct node_updates *n = nupd_init (100, 512, ctx->faulty_mem, &ctx->e);
+    test_assert (n != NULL);
+
+    for (u32 i = 0; i < NUPD_LENGTH; ++i) {
+      test_assert (nupd_append_left (n, 1000 + i, 2000 + i, &ctx->e) != NULL);
+    }
+    test_assert_equal (n->llen, NUPD_LENGTH);
+    n->prev = NULL;
+
+    faulty_mem_reset (ctx->faulty_mem);
+    faulty_mem_fail_after (ctx->faulty_mem, 0);
+
+    test_assert (nupd_append_2nd_left (n, 50, 256, 40, 128, &ctx->e) != SUCCESS);
+    error_reset (&ctx->e);
+
+    faulty_mem_reset (ctx->faulty_mem);
+    nupd_free (n);
+  }
+
+  TEST_CASE ("A failed allocation on the second entry is surfaced")
+  {
+    struct node_updates *n = nupd_init (100, 512, ctx->faulty_mem, &ctx->e);
+    test_assert (n != NULL);
+
+    // One short of the slab boundary: the first push fits, the second spills
+    for (u32 i = 0; i < NUPD_LENGTH - 1; ++i) {
+      test_assert (nupd_append_left (n, 1000 + i, 2000 + i, &ctx->e) != NULL);
+    }
+    test_assert_equal (n->llen, NUPD_LENGTH - 1);
+    n->prev = NULL;
+
+    faulty_mem_reset (ctx->faulty_mem);
+    faulty_mem_fail_after (ctx->faulty_mem, 0);
+
+    test_assert (nupd_append_2nd_left (n, 50, 256, 40, 128, &ctx->e) != SUCCESS);
+    error_reset (&ctx->e);
+
+    // The first of the two did land
+    test_assert_equal (n->llen, NUPD_LENGTH);
+    test_assert_equal (nupd_get_left (n, NUPD_LENGTH - 1)->pg, 50);
+
+    faulty_mem_reset (ctx->faulty_mem);
+    nupd_free (n);
+  }
+}
+#endif
 
 err_t
 nupd_append_tip_right (struct node_updates *s, const struct three_in_pair output, error *e)

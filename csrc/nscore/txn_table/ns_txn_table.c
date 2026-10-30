@@ -261,6 +261,87 @@ TEST (txn_basic)
     txn_close (&tx);
   }
 }
+
+TEST (txn_haslock)
+{
+  TEST_CASE ("An empty transaction holds nothing")
+  {
+    struct txn tx;
+    txn_init (
+        &tx,
+        10,
+        (struct txn_data){
+            .state         = TX_RUNNING,
+            .last_lsn      = 10,
+            .undo_next_lsn = 5,
+        },
+        ctx->mem
+    );
+
+    // Walks the whole (empty) list and falls out of the loop
+    test_assert (!txn_haslock (&tx, lock_db ()));
+
+    txn_close (&tx);
+  }
+
+  TEST_CASE ("A taken lock is reported held")
+  {
+    struct txn tx;
+    txn_init (
+        &tx,
+        10,
+        (struct txn_data){
+            .state         = TX_RUNNING,
+            .last_lsn      = 10,
+            .undo_next_lsn = 5,
+        },
+        ctx->mem
+    );
+
+    test_assert_int_equal (txn_newlock (&tx, lock_db (), LM_X, &ctx->e), SUCCESS);
+    test_assert (txn_haslock (&tx, lock_db ()));
+
+    // Re-taking it is a no-op, and it is still held afterwards
+    test_assert_int_equal (txn_newlock (&tx, lock_db (), LM_X, &ctx->e), SUCCESS);
+    test_assert (txn_haslock (&tx, lock_db ()));
+
+    txn_close (&tx);
+  }
+
+  TEST_CASE ("Closing gives the locks back")
+  {
+    struct txn tx;
+    txn_init (
+        &tx,
+        10,
+        (struct txn_data){
+            .state         = TX_RUNNING,
+            .last_lsn      = 10,
+            .undo_next_lsn = 5,
+        },
+        ctx->mem
+    );
+
+    test_assert_int_equal (txn_newlock (&tx, lock_db (), LM_X, &ctx->e), SUCCESS);
+    test_assert (txn_haslock (&tx, lock_db ()));
+    txn_close (&tx);
+
+    // A reinitialised txn starts over, it does not inherit the old list
+    txn_init (
+        &tx,
+        11,
+        (struct txn_data){
+            .state         = TX_RUNNING,
+            .last_lsn      = 11,
+            .undo_next_lsn = 6,
+        },
+        ctx->mem
+    );
+    test_assert (!txn_haslock (&tx, lock_db ()));
+
+    txn_close (&tx);
+  }
+}
 #endif
 
 /******************************************************************************

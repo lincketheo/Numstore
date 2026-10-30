@@ -104,6 +104,110 @@ walos_crash (struct wal_ostream *w, error *e)
   return error_trace (e);
 }
 
+#ifndef NDEBUG
+
+#  define WALOS_CRASH_T_FILE "walos_crash_t.wal"
+
+/// Bytes on disk for [fname]. The crash tests are only ever asking "did this
+/// reach the file", and reopening is the only way to ask that from outside
+/// the stream that was just thrown away.
+static i64
+walos_test_file_size (struct test_ctx *ctx, const char *fname)
+{
+  i_file f;
+  if (ctx->os.table->open_file_r (ctx->os.self, &f, fname, &ctx->e) != SUCCESS) {
+    return -1;
+  }
+  const i64 size = f.table->file_size (f.self, &ctx->e);
+  ctx->os.table->close_file (ctx->os.self, f.self, &ctx->e);
+  return size;
+}
+
+/// walos_crash is walos_close minus the flush: it models the process dying
+/// with a dirty WAL buffer, so everything that had not been fsynced has to be
+/// lost and everything that had been has to survive. It still owns the file
+/// handle and the allocation, so it still has to release both - a leaked fd
+/// trips the OS teardown assert in test_ctx_free.
+TEST (walos_crash)
+{
+  const u8 payload[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+
+  TEST_CASE ("unflushed writes never reach the file")
+  {
+    ctx->os.table->remove_quiet (ctx->os.self, WALOS_CRASH_T_FILE, &ctx->e);
+
+    struct wal_ostream *wos = walos_open (WALOS_CRASH_T_FILE, ctx->mem, ctx->os, &ctx->e);
+    test_assert (wos != NULL);
+
+    test_assert_int_equal (walos_write_all (wos, NULL, payload, sizeof payload, &ctx->e), SUCCESS);
+
+    // Buffered only: the next lsn moved, the flushed one did not
+    test_assert_int_equal ((i32)walos_get_next_lsn (wos), (i32)sizeof payload);
+    test_assert_int_equal ((i32)wos->flushed_lsn, 0);
+
+    test_assert_int_equal (walos_crash (wos, &ctx->e), SUCCESS);
+
+    test_assert_int_equal ((i32)walos_test_file_size (ctx, WALOS_CRASH_T_FILE), 0);
+
+    ctx->os.table->remove_quiet (ctx->os.self, WALOS_CRASH_T_FILE, &ctx->e);
+  }
+
+  TEST_CASE ("flushed writes survive, later ones do not")
+  {
+    ctx->os.table->remove_quiet (ctx->os.self, WALOS_CRASH_T_FILE, &ctx->e);
+
+    struct wal_ostream *wos = walos_open (WALOS_CRASH_T_FILE, ctx->mem, ctx->os, &ctx->e);
+    test_assert (wos != NULL);
+
+    test_assert_int_equal (walos_write_all (wos, NULL, payload, sizeof payload, &ctx->e), SUCCESS);
+    test_assert_int_equal (walos_flush_all (wos, &ctx->e), SUCCESS);
+    test_assert_int_equal ((i32)wos->flushed_lsn, (i32)sizeof payload);
+
+    // A second write that is still sitting in the buffer when we die
+    test_assert_int_equal (walos_write_all (wos, NULL, payload, sizeof payload, &ctx->e), SUCCESS);
+    test_assert_int_equal ((i32)walos_get_next_lsn (wos), 2 * (i32)sizeof payload);
+
+    test_assert_int_equal (walos_crash (wos, &ctx->e), SUCCESS);
+
+    // Exactly the flushed prefix is on disk
+    test_assert_int_equal (
+        (i32)walos_test_file_size (ctx, WALOS_CRASH_T_FILE),
+        (i32)sizeof payload
+    );
+
+    i_file f;
+    test_assert_int_equal (
+        ctx->os.table->open_file_r (ctx->os.self, &f, WALOS_CRASH_T_FILE, &ctx->e),
+        SUCCESS
+    );
+    u8 readback[8] = {0};
+    test_assert_int_equal (
+        (i32)f.table->read_all (f.self, readback, sizeof readback, &ctx->e),
+        (i32)sizeof readback
+    );
+    test_assert_memequal (readback, payload, sizeof payload);
+    ctx->os.table->close_file (ctx->os.self, f.self, &ctx->e);
+
+    ctx->os.table->remove_quiet (ctx->os.self, WALOS_CRASH_T_FILE, &ctx->e);
+  }
+
+  TEST_CASE ("crashing straight after open leaves an empty wal behind")
+  {
+    ctx->os.table->remove_quiet (ctx->os.self, WALOS_CRASH_T_FILE, &ctx->e);
+
+    struct wal_ostream *wos = walos_open (WALOS_CRASH_T_FILE, ctx->mem, ctx->os, &ctx->e);
+    test_assert (wos != NULL);
+    test_assert_int_equal (walos_crash (wos, &ctx->e), SUCCESS);
+
+    // walos_open created the file, so it exists and is empty - not missing
+    test_assert_int_equal ((i32)walos_test_file_size (ctx, WALOS_CRASH_T_FILE), 0);
+
+    ctx->os.table->remove_quiet (ctx->os.self, WALOS_CRASH_T_FILE, &ctx->e);
+  }
+}
+
+#endif // TESTING
+
 static err_t
 walos_flush_impl (struct wal_ostream *w, error *e)
 {

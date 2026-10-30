@@ -88,6 +88,68 @@ test_assert_inner_node_equal (
     test_assert_type_equal (key, e_keys[i], b_size, PRb_size);
   }
 }
+
+/// in_print and in_print_as_arrays only ever run from the failure path of
+/// test_assert_inner_node_equal, so a green run never reaches them and a red
+/// one is the worst time to find out one of them walks off the end of a node.
+/// This exercises both over the shapes that path can hand them.
+TEST (in_print)
+{
+  page in;
+
+  TEST_CASE ("empty node prints nothing but the newline")
+  {
+    inner_node_init_for_testing (&in, NULL, NULL, 0);
+
+    test_assert_int_equal (in_get_len (&in), 0);
+
+    in_print (&in);
+    in_print_as_arrays (NULL, NULL, 0);
+  }
+
+  TEST_CASE ("populated node and its arrays print the same pairs")
+  {
+    const pgno   pgs[3]  = {100, 101, 102};
+    const b_size keys[3] = {5, 7, 9};
+
+    inner_node_init_for_testing (&in, pgs, keys, 3);
+
+    in_print (&in);
+    in_print_as_arrays (pgs, keys, 3);
+
+    // Both printers read the same pairs out of their own source - the thing
+    // that makes the two dumps comparable by eye when a test fails
+    for (p_size i = 0; i < 3; ++i) {
+      test_assert_type_equal (in_get_leaf (&in, i), pgs[i], pgno, PRpgno);
+      test_assert_type_equal (in_get_key (&in, i), keys[i], b_size, PRb_size);
+    }
+
+    // And the pair of them is exactly what a passing comparison asserts
+    test_assert_inner_node_equal (&in, pgs, keys, 3);
+  }
+
+  TEST_CASE ("full node")
+  {
+    // The failure path dumps whatever len says, so the widest node a caller
+    // can hand it has to be safe too
+    static pgno   pgs[IN_MAX_KEYS];
+    static b_size keys[IN_MAX_KEYS];
+    for (p_size i = 0; i < IN_MAX_KEYS; ++i) {
+      pgs[i]  = (pgno)(i + 1);
+      keys[i] = (b_size)(i * 2);
+    }
+
+    inner_node_init_for_testing (&in, pgs, keys, IN_MAX_KEYS);
+
+    test_assert_int_equal (in_get_len (&in), IN_MAX_KEYS);
+    test_assert (in_full (&in));
+
+    in_print (&in);
+    in_print_as_arrays (pgs, keys, IN_MAX_KEYS);
+
+    test_assert_inner_node_equal (&in, pgs, keys, IN_MAX_KEYS);
+  }
+}
 #endif
 
 #define VTYPE  int

@@ -356,6 +356,62 @@ nsdb_var_type (struct nsdb_var *var)
   return var->var.dtype;
 }
 
+#ifndef NDEBUG
+// The accessors are thin, so what is worth pinning down is that each one
+// reads the field it claims to - a getter wired to the neighbouring pgno
+// would otherwise go unnoticed.
+TEST (nsdb_var_accessors)
+{
+  nsdb_cleanup ("./test.db", ctx->os, &ctx->e);
+  struct nsdb *db = nsdb_open ("./test.db", ctx->mem, ctx->os, &ctx->e);
+  test_assert (db != NULL);
+  nsdb_init_numstore (db, &ctx->e);
+  struct txn *tx = nsdb_begin (db, &ctx->e);
+
+  TEST_CASE ("Each getter reads its own field")
+  {
+    test_assert_int_equal (nsdb_execute (db, tx, "create accessors u32", &ctx->e), SUCCESS);
+
+    struct nsdb_var *var = nsdb_get_var (db, tx, "get accessors", &ctx->e);
+    test_assert (var != NULL);
+
+    const struct variable *v = nsdb_var_var (var);
+
+    test_assert (string_equal (nsdb_var_name (var), strfcstr ("accessors")));
+    test_assert (string_equal (nsdb_var_name (var), v->vname));
+
+    test_assert_equal (nsdb_var_var_root (var), v->var_root);
+    test_assert_equal (nsdb_var_rpt_root (var), v->rpt_root);
+
+    // The two roots are distinct pages, so a getter crossed with the other
+    // one would show up here
+    test_assert (nsdb_var_var_root (var) != nsdb_var_rpt_root (var));
+
+    nsdb_var_free (var);
+  }
+
+  TEST_CASE ("Two variables have their own names and roots")
+  {
+    test_assert_int_equal (nsdb_execute (db, tx, "create other u16", &ctx->e), SUCCESS);
+
+    struct nsdb_var *a = nsdb_get_var (db, tx, "get accessors", &ctx->e);
+    struct nsdb_var *b = nsdb_get_var (db, tx, "get other", &ctx->e);
+    test_assert (a != NULL);
+    test_assert (b != NULL);
+
+    test_assert (string_equal (nsdb_var_name (a), strfcstr ("accessors")));
+    test_assert (string_equal (nsdb_var_name (b), strfcstr ("other")));
+    test_assert (nsdb_var_var_root (a) != nsdb_var_var_root (b));
+
+    nsdb_var_free (b);
+    nsdb_var_free (a);
+  }
+
+  nsdb_commit (db, tx, &ctx->e);
+  nsdb_close (db, &ctx->e);
+}
+#endif
+
 /////////////////////////////////////// Nsdb Plan - a pre compiled statement
 /// that can be executed
 
@@ -1196,7 +1252,9 @@ nsdb_plan_console_read (struct nsdb_plan *plan, error *_e)
 
   // Release resources
   nsdb_var_free (_var);
-  mem.table->free (mem.self, data);
+  if (data) {
+    mem.table->free (mem.self, data);
+  }
 
   if (nsdb_commit (plan->parent, tx, e) < 0) {
     return error_trace (e);
@@ -1235,10 +1293,6 @@ nsdb_plan_console_create (struct nsdb_plan *plan, error *_e)
     return error_trace (e);
   }
 
-  // var.dtype points INTO alloc, so the arena has to outlive this print.
-  // Closing it first was a use-after-free: harmless where the freed bytes
-  // happen to survive, but MSVC's debug CRT fills them with 0xDD, which is
-  // what turned up as an invalid type header on Windows only.
   i_print_variable (&var, e);
   ALLOC_CLOSE (alloc);
 
@@ -1286,8 +1340,6 @@ nsdb_plan_console (struct nsdb_plan *ns, error *_e)
 }
 
 #ifndef NDEBUG
-// nsdb_console opens and closes its own transaction, so no transaction may be
-// open across a call -- nsdb_begin holds the DB lock exclusively.
 TEST (nsdb_console)
 {
   nsdb_cleanup ("./test.db", ctx->os, &ctx->e);
@@ -1315,7 +1367,7 @@ TEST (nsdb_console)
     test_assert_int_equal (nsdb_console (db, "read foo[0:]", &ctx->e), 10);
   }
 
-  // These arms only name the query type; none of them touch the pager.
+  // These only name the query type; none of them touch the pager.
   TEST_CASE ("the unimplemented query types are only named")
   {
     test_assert (nsdb_console (db, "write foo[0:10]", &ctx->e) > 0);
@@ -1332,16 +1384,12 @@ TEST (nsdb_console)
     test_err_t_check (nsdb_console (db, "not a real query", &ctx->e), ERR_SYNTAX, &ctx->e);
   }
 
-  // numstore_create is get-or-create, so a repeated create is not an error: it
-  // prints the variable that is already there and leaves its data alone.
   TEST_CASE ("create of an existing variable keeps the existing data")
   {
     test_assert_int_equal (nsdb_console (db, "create foo u32", &ctx->e), SUCCESS);
     test_assert_int_equal (nsdb_console (db, "read foo[0:]", &ctx->e), 10);
   }
 
-  // The failing read has to roll back, or the next nsdb_begin would hang on the
-  // DB lock. The follow-up console call is what proves it did.
   TEST_CASE ("read of a missing variable rolls back and is reported")
   {
     test_err_t_check (nsdb_console (db, "read nope[0:]", &ctx->e), ERR_VARIABLE_NE, &ctx->e);
@@ -1364,7 +1412,7 @@ TEST (nsdb_console)
 //   skipped. Fix: use mem_cfree (mem, data), the maybe-NULL variant.
 //
 // Disabled because it aborts the whole suite instead of failing one test.
-TEST_DISABLED (nsdb_console_read_empty_variable)
+TEST (nsdb_console_read_empty_variable)
 {
   nsdb_cleanup ("./test.db", ctx->os, &ctx->e);
   struct nsdb *db = nsdb_open ("./test.db", ctx->mem, ctx->os, &ctx->e);
@@ -1541,7 +1589,7 @@ nsdb_smfile_insert (
   }
 
   ALLOC_INIT (temp);
-  sb_size ret = smartfiles_insert (db->p, tx, &input, bofst, slen, &temp, db->e);
+  sb_size ret = smartfiles_insert (db->p, tx, &input, bofst, slen, &temp, e);
   ALLOC_CLOSE (temp);
 
   return nsdb_auto_finish (db, user_tx, ret, e);

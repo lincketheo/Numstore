@@ -1006,3 +1006,84 @@ TEST (ns_simul)
   }
 }
 #endif
+
+#ifndef NDEBUG
+// A phased simulation re-arms the action set between phases (see regression
+// 0004), so set_enabled has to replace the whole set, not merge into it.
+TEST (ns_simul_set_enabled)
+{
+  struct ns_simulation_params params = {
+      .seed              = 4321,
+      .commit_hash       = "abcd",
+      // .enabled - left empty, set_enabled is what is under test
+      .sequence_id       = 11,
+      .dbname            = "./ns_simul_set_enabled.db",
+      .max_insert_len    = 1000,
+      .max_tsize         = 1000,
+      .sample_space_prob = 1,
+      .test_os           = ctx->os,
+      .test_mem          = ctx->mem,
+      .reliable_mem      = ctx->mem,
+      .reliable_os       = ctx->os,
+  };
+
+  struct ns_simulation *simul = ns_simul_open (params, &ctx->e);
+  test_assert (simul != NULL);
+
+  TEST_CASE ("Opens with nothing enabled")
+  {
+    for (u32 i = 0; i < NSS_AT_LEN; ++i) {
+      test_assert_int_equal (simul->enabled[i], 0);
+    }
+  }
+
+  TEST_CASE ("Takes the whole set")
+  {
+    u8 churn[NSS_AT_LEN]                          = {0};
+    churn[NSS_CREATE_AND_SWAP_IF_EMPTY]           = 1;
+    churn[NSS_SWITCH]                             = 1;
+    churn[NSS_DELETE_CURRENT_VARIABLE_AND_SWITCH] = 1;
+    churn[NSS_INSERT]                             = 1;
+
+    ns_simul_set_enabled (simul, churn);
+
+    for (u32 i = 0; i < NSS_AT_LEN; ++i) {
+      test_assert_int_equal (simul->enabled[i], churn[i]);
+    }
+
+    test_assert_int_equal (ns_simul_step (simul, &ctx->e), SUCCESS);
+  }
+
+  TEST_CASE ("Replaces rather than merges")
+  {
+    // The previous phase's actions must be gone, not still on
+    u8 only_read[NSS_AT_LEN] = {0};
+    only_read[NSS_READ]      = 1;
+
+    ns_simul_set_enabled (simul, only_read);
+
+    for (u32 i = 0; i < NSS_AT_LEN; ++i) {
+      test_assert_int_equal (simul->enabled[i], i == NSS_READ ? 1 : 0);
+    }
+  }
+
+  TEST_CASE ("An empty set leaves no action to pick")
+  {
+    u8 none[NSS_AT_LEN] = {0};
+    ns_simul_set_enabled (simul, none);
+
+    for (u32 i = 0; i < NSS_AT_LEN; ++i) {
+      test_assert_int_equal (simul->enabled[i], 0);
+    }
+
+    // Nothing available is a step that does nothing, not a failure
+    test_assert_int_equal (ns_simul_step (simul, &ctx->e), SUCCESS);
+  }
+
+  test_assert_int_equal (ns_simul_close (simul, &ctx->e), SUCCESS);
+
+  // Don't leave a db behind in the working directory
+  nsdb_cleanup (params.dbname, ctx->os, &ctx->e);
+  error_reset (&ctx->e);
+}
+#endif

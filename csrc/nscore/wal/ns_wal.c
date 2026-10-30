@@ -44,14 +44,13 @@ wal_init (struct wal *dest, error *e)
 
   dest->ostream = walos_open (dest->fname.data, dest->mem, dest->os, e);
   if (dest->ostream == NULL) {
-    dest->mem.table->free (dest->mem.self, (char *)dest->fname.data);
     return error_trace (e);
   }
 
   dest->istream = walis_open (dest->fname.data, dest->mem, dest->os, e);
   if (dest->istream == NULL) {
-    dest->mem.table->free (dest->mem.self, (char *)dest->fname.data);
     walos_close (dest->ostream, e);
+    dest->ostream = NULL;
     return error_trace (e);
   }
 
@@ -63,9 +62,10 @@ wal_init (struct wal *dest, error *e)
   walis_mark_start_log (dest->istream);
 
   if (walis_read_all (dest->istream, &iseof, NULL, &checksum, &start_lsn, sizeof (start_lsn), e)) {
-    dest->mem.table->free (dest->mem.self, (char *)dest->fname.data);
     walos_close (dest->ostream, e);
     walis_close (dest->istream, e);
+    dest->ostream = NULL;
+    dest->istream = NULL;
     return error_trace (e);
   }
 
@@ -76,9 +76,10 @@ wal_init (struct wal *dest, error *e)
 
     // Truncate the output wal
     if (walos_truncate (dest->ostream, e)) {
-      dest->mem.table->free (dest->mem.self, (char *)dest->fname.data);
       walos_close (dest->ostream, e);
       walis_close (dest->istream, e);
+      dest->ostream = NULL;
+      dest->istream = NULL;
       return error_trace (e);
     }
   } else {
@@ -140,12 +141,19 @@ wal_open (const char *fname, struct i_mem mem, struct i_os os, error *e)
 static inline err_t
 wal_destroy (struct wal *w, error *e)
 {
-  wal_flush_all (w, e);
-  walos_close (w->ostream, e);
-  walis_close (w->istream, e);
+  if (w->ostream) {
+    wal_flush_all (w, e);
+    walos_close (w->ostream, e);
+    w->ostream = NULL;
+  }
+  if (w->istream) {
+    walis_close (w->istream, e);
+    w->istream = NULL;
+  }
 
   if (w->fname.data) {
     w->mem.table->free (w->mem.self, (void *)w->fname.data);
+    w->fname.data = NULL;
   }
   return error_trace (e);
 }
@@ -235,8 +243,12 @@ wal_crash (struct wal *w, error *e)
 
   struct i_mem mem = w->mem;
 
-  walos_close (w->ostream, e);
-  walis_close (w->istream, e);
+  if (w->ostream) {
+    walos_close (w->ostream, e);
+  }
+  if (w->istream) {
+    walis_close (w->istream, e);
+  }
   if (w->fname.data) {
     mem.table->free (mem.self, (void *)w->fname.data);
   }

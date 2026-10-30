@@ -15,6 +15,9 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#include "core/ns_platform.h" // HEADER_FUNC
+#include "core/ns_stdtypes.h" // u32
+
 ////////////////////////////////////////////////////////////
 // SIMPLE UTILITIES
 
@@ -48,6 +51,12 @@ const char *file_basename (const char *path);
 #define CJOIN3(val) val, val, val
 #define CJOIN4(val) val, val, val, val
 #define CJOIN5(val) val, val, val, val, val
+
+HEADER_FUNC u32
+snprintf_len (const int n)
+{
+  return n > 0 ? (u32)n : 0; // LCOV_EXCL_BR_LINE - the negative side is dead
+}
 
 #ifndef RH__CAT
 #  define RH__CAT(a, b)  a##b

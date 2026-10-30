@@ -222,13 +222,6 @@ failed:
   return error_trace (e);
 }
 
-static sb_size
-ns_read_backward (const struct ns_read_params params, error *e)
-{
-  (void)params; // Unused
-  return error_causef (e, ERR_INVALID_ARGUMENT, "Negative strides are not implemented (yet)");
-}
-
 sb_size
 ns_rope_read (const struct ns_read_params params, error *e)
 {
@@ -237,7 +230,7 @@ ns_rope_read (const struct ns_read_params params, error *e)
   }
 
   if (params.stride < 0) {
-    return ns_read_backward (params, e);
+    return error_causef (e, ERR_INVALID_ARGUMENT, "Negative strides are not implemented (yet)");
   }
 
   return error_causef (e, ERR_INVALID_ARGUMENT, "read stride is 0");

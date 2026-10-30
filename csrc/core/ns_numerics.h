@@ -118,46 +118,4 @@ i32 py_mod_i32 (i32 num, i32 denom);
 
 float f16_to_f32 (u16 h);
 
-/******************************************************************************
- * SECTION: Safe Arithmetic
- ******************************************************************************/
-
-// dest = dest + arg
-HEADER_FUNC err_t
-safe_add_u16 (u16 *dest, u16 arg, error *e)
-{
-  // Compared in u32 so the check never depends on how UINT16_MAX and the u16
-  // operands promote
-  if ((u32)*dest + (u32)arg > (u32)UINT16_MAX) {
-    return error_causef (
-        e,
-        ERR_ARITH,
-        "Arithmetic overflow: %d + %d > %d\n",
-        *dest,
-        arg,
-        UINT16_MAX
-    );
-  }
-  *dest += arg;
-  return SUCCESS;
-}
-
-// dest = dest + (arg1 * arg2)
-HEADER_FUNC err_t
-safe_add_mul_u16 (u16 *dest, u16 arg1, u16 arg2, error *e)
-{
-  u32 product = (u32)arg1 * (u32)arg2;
-  if (product > (u32)UINT16_MAX) {
-    return error_causef (
-        e,
-        ERR_ARITH,
-        "Arithmetic overflow: %d * %d > %d\n",
-        arg1,
-        arg2,
-        UINT16_MAX
-    );
-  }
-  return safe_add_u16 (dest, product, e);
-}
-
 #endif // NUMERICS_H

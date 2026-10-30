@@ -56,6 +56,7 @@ void arena_alloc_assert (const struct arena_alloc *a);
 DEFINE_DBG_ASSERT (struct arena_alloc, arena_alloc, ca, { arena_alloc_assert (ca); })
 #endif
 
+void arena_alloc_create (struct arena_alloc *dest, struct arena_alloc_settings settings);
 void arena_alloc_create_default_with (struct arena_alloc *dest, struct i_mem mem);
 void arena_alloc_create_default (struct arena_alloc *dest);
 void *arena_malloc (struct arena_alloc *ca, u32 req, u32 size, error *e);

@@ -263,4 +263,103 @@ TEST (faulty_mem_fail_after_budget)
   faulty_mem_reset (f);
 }
 
+TEST (faulty_mem_set_fail)
+{
+  struct i_mem f = ctx->faulty_mem;
+
+  TEST_CASE ("1.0 fails every call")
+  {
+    faulty_mem_reset (f);
+    faulty_mem_set_fail (f, 1.0f);
+
+    test_assert_ptr_equal (f.table->malloc (f.self, 1, 8, &ctx->e), NULL);
+    test_assert_int_equal (ctx->e.cause_code, ERR_NOMEM);
+    error_reset (&ctx->e);
+
+    test_assert_ptr_equal (f.table->calloc (f.self, 1, 8, &ctx->e), NULL);
+    test_assert_int_equal (ctx->e.cause_code, ERR_NOMEM);
+    error_reset (&ctx->e);
+
+    // Nothing reached the delegate, so nothing was counted
+    test_assert_int_equal (faulty_num_mallocs (f), 0);
+  }
+
+  TEST_CASE ("0.0 lets every call through again")
+  {
+    // The rate is a dial, not a latch: lowering it re-arms the delegate
+    faulty_mem_set_fail (f, 0.0f);
+
+    void *p = f.table->malloc (f.self, 1, 8, &ctx->e);
+    test_assert (p != NULL);
+    test_assert_int_equal (faulty_num_mallocs (f), 1);
+    f.table->free (f.self, p);
+  }
+
+  faulty_mem_reset (f);
+}
+
+TEST (faulty_mem_realloc)
+{
+  struct i_mem f = ctx->faulty_mem;
+
+  TEST_CASE ("Passes through to the delegate and keeps the prefix")
+  {
+    faulty_mem_reset (f);
+
+    u8 *p = f.table->malloc (f.self, 8, 1, &ctx->e);
+    test_assert (p != NULL);
+    memset (p, 0x5a, 8);
+
+    u8 *grown = f.table->realloc (f.self, p, 64, 1, &ctx->e);
+    test_assert (grown != NULL);
+    for (u32 i = 0; i < 8; ++i) {
+      test_assert_int_equal (grown[i], 0x5a);
+    }
+
+    // malloc + realloc both reached the delegate
+    test_assert_int_equal (faulty_num_mallocs (f), 2);
+
+    f.table->free (f.self, grown);
+  }
+
+  TEST_CASE ("A budgeted fault can land on realloc")
+  {
+    faulty_mem_reset (f);
+
+    u8 *p = f.table->malloc (f.self, 8, 1, &ctx->e);
+    test_assert (p != NULL);
+    memset (p, 0x5a, 8);
+
+    faulty_mem_fail_after (f, 0);
+    test_assert_ptr_equal (f.table->realloc (f.self, p, 64, 1, &ctx->e), NULL);
+    test_assert_int_equal (ctx->e.cause_code, ERR_NOMEM);
+    error_reset (&ctx->e);
+
+    // A refused realloc never reached the delegate, so [p] is still ours
+    test_assert_int_equal (faulty_num_mallocs (f), 1);
+    for (u32 i = 0; i < 8; ++i) {
+      test_assert_int_equal (p[i], 0x5a);
+    }
+    f.table->free (f.self, p);
+  }
+
+  TEST_CASE ("A rate of 1.0 refuses it too")
+  {
+    faulty_mem_reset (f);
+
+    u8 *p = f.table->malloc (f.self, 8, 1, &ctx->e);
+    test_assert (p != NULL);
+
+    faulty_mem_set_fail (f, 1.0f);
+    test_assert_ptr_equal (f.table->realloc (f.self, p, 64, 1, &ctx->e), NULL);
+    test_assert_int_equal (ctx->e.cause_code, ERR_NOMEM);
+    error_reset (&ctx->e);
+
+    faulty_mem_set_fail (f, 0.0f);
+    f.table->free (f.self, p);
+  }
+
+  faulty_mem_reset (f);
+}
+
 #endif // NDEBUG

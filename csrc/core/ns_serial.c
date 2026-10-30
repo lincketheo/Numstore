@@ -14,7 +14,9 @@
 
 #include "core/ns_serial.h"
 
+#include "core/ns_bounds.h"
 #include "core/ns_csx_assert.h"
+#include "core/ns_latch.h"
 
 #ifndef NDEBUG
 #  include "core/ns_numerics.h" // randu32r / rand_bytes
@@ -55,12 +57,13 @@ srlizr_write (struct serializer *dest, const void *src, const u32 len)
 
   DBG_ASSERT (serializer, dest);
 
-  if (dest->dlen + len > dest->dcap) {
+  u32 newlen;
+  if (!safe_add_u32 (&newlen, dest->dlen, len) || newlen > dest->dcap) {
     latch_unlock (&dest->latch);
     return false;
   }
   memcpy (dest->data + dest->dlen, src, len);
-  dest->dlen += len;
+  dest->dlen = newlen;
 
   DBG_ASSERT (serializer, dest);
 
@@ -98,12 +101,15 @@ dsrlizr_read (void *dest, const u32 dlen, struct deserializer *src)
 
   DBG_ASSERT (deserializer, src);
 
-  if (src->head + dlen > src->dlen) {
+  // Check of capacity overflow
+  u32 newlen;
+  if (!safe_add_u32 (&newlen, src->head, dlen) || newlen > src->dlen) {
     latch_unlock (&src->latch);
     return false;
   }
+
   memcpy (dest, src->data + src->head, dlen);
-  src->head += dlen;
+  src->head = newlen;
 
   DBG_ASSERT (deserializer, src);
 
@@ -113,10 +119,6 @@ dsrlizr_read (void *dest, const u32 dlen, struct deserializer *src)
 }
 
 #ifndef NDEBUG
-
-/******************************************************************************
- * SECTION: Tests
- ******************************************************************************/
 
 /// A serializer is a cursor over a fixed buffer:
 ///
@@ -403,15 +405,7 @@ TEST (srlizr_write_concurrent)
   ctx->mem.table->free (ctx->mem.self, buf);
 }
 
-/// The guard adds dlen + len in u32, so a len near UINT32_MAX wraps the sum
-/// below dcap and the write is accepted - then memcpy runs with that len.
-/// This should pass: a length that cannot possibly fit must be refused, not
-/// wrapped into an accept.
-///
-/// Disabled because the bug is a wild memcpy, which takes the whole suite
-/// down rather than failing one test. Fix is to compare against the remaining
-/// space instead: len > dcap - dlen.
-TEST_DISABLED (srlizr_write_length_overflow)
+TEST (srlizr_write_length_overflow)
 {
   u8                buf[64] = {0};
   struct serializer s       = srlizr_create (buf, sizeof (buf));
@@ -421,10 +415,7 @@ TEST_DISABLED (srlizr_write_length_overflow)
   test_assert_int_equal (s.dlen, 8);
 }
 
-/// Mirror of the above on the read side: head + dlen overflows in u32, so an
-/// impossible read length is accepted and memcpy writes UINT32_MAX-ish bytes
-/// into dest. Fix is the same shape: dlen > src->dlen - src->head.
-TEST_DISABLED (dsrlizr_read_length_overflow)
+TEST (dsrlizr_read_length_overflow)
 {
   const u8            src[16] = {0};
   struct deserializer d       = dsrlizr_create (src, sizeof (src));

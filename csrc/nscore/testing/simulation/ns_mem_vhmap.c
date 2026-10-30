@@ -238,12 +238,6 @@ mem_vhmap_remove (struct mem_vhmap *db, struct string name)
   slab_alloc_free (&db->alloc, frame);
 }
 
-u32
-mem_vhmap_count (struct mem_vhmap *db)
-{
-  return htable_size (db->vhasht);
-}
-
 struct rand_ctx
 {
   u32                   index;

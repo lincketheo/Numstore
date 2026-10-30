@@ -105,6 +105,15 @@ error_causef (error *e, const err_t c, const char *fmt, ...)
   return c;
 }
 
+err_t
+error_trace_at (error *e, const char *file, const int line, const char *func)
+{
+  if (e->cause_code < 0) {
+    return error_causef (e, e->cause_code, FPREFIX_STR, file, line, func);
+  }
+  return e->cause_code;
+}
+
 void
 error_log_consume (error *e)
 {

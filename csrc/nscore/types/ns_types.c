@@ -15,6 +15,7 @@
 #include "nscore/types/ns_types.h"
 
 #include "core/ns_arena_alloc.h"
+#include "core/ns_bounds.h"
 #include "core/ns_csx_assert.h"
 #include "core/ns_error.h"
 #include "core/ns_numerics.h"
@@ -41,7 +42,7 @@ static inline err_t
 prim_t_validate (const enum prim_t *t, error *e)
 {
   ASSERT (t);
-  if (!(*t <= CU128 && *t >= U8)) {
+  if ((u32)*t > (u32)CU128) {
     return error_causef (e, ERR_INTERP, "invalid prim type %d (valid range %d..%d)", *t, U8, CU128);
   }
 
@@ -104,6 +105,46 @@ type_validate (const struct type *t, error *e)
   return type_get_serial_size (&size, t, e);
 }
 
+#ifndef NDEBUG
+TEST (type_validate_rejects)
+{
+  TEST_CASE ("unknown type code")
+  {
+    struct type t = {.type = (enum type_t)99};
+    test_err_t_check (type_validate (&t, &ctx->e), ERR_CORRUPT, &ctx->e);
+  }
+
+  TEST_CASE ("bad prim")
+  {
+    struct type t = {.type = T_PRIM, .p = (enum prim_t) (CU128 + 1)};
+    test_err_t_check (type_validate (&t, &ctx->e), ERR_INTERP, &ctx->e);
+  }
+
+  TEST_CASE ("bad struct - duplicate keys")
+  {
+    struct string keys[]  = {strfcstr ("a"), strfcstr ("a")};
+    struct type  *types[] = {&TU8, &TU16};
+    struct type   t       = mk_struct (2, keys, types);
+    test_err_t_check (type_validate (&t, &ctx->e), ERR_INTERP, &ctx->e);
+  }
+
+  TEST_CASE ("bad union - zero length")
+  {
+    struct string keys[]  = {strfcstr ("a")};
+    struct type  *types[] = {&TU8};
+    struct type   t       = mk_union (0, keys, types);
+    test_err_t_check (type_validate (&t, &ctx->e), ERR_INTERP, &ctx->e);
+  }
+
+  TEST_CASE ("bad sarray - zero rank")
+  {
+    u32         dims[] = {4};
+    struct type t      = mk_sarray (0, dims, &TU8);
+    test_err_t_check (type_validate (&t, &ctx->e), ERR_INTERP, &ctx->e);
+  }
+}
+#endif
+
 /*-----------------------------------------------------------------------------
  * SUBSECTION: type_snprintf
  * @brief Print a type into a buffer cleanly
@@ -160,9 +201,11 @@ prim_t_snprintf (char *str, u32 size, const enum prim_t p)
   const char *name = prim_to_str (p);
 
   n                = snprintf (out, avail, "%s", name);
-  if (n < 0) {
-    return n;
-  }
+
+  if (n < 0) { // LCOV_EXCL_LINE
+    return n;  // LCOV_EXCL_LINE
+  } // LCOV_EXCL_LINE
+
   len += n;
 
   return len;
@@ -248,18 +291,18 @@ char *
 type_tostr (struct arena_alloc *alloc, struct type *t, error *e)
 {
   int len = type_snprintf (NULL, 0, t);
-  if (len < 0) {
-    return NULL;
-  }
+  if (len < 0) { // LCOV_EXCL_LINE
+    return NULL; // LCOV_EXCL_LINE
+  } // LCOV_EXCL_LINE
 
   char *msg = arena_malloc (alloc, len + 1, 1, e);
   if (msg == NULL) {
     return NULL;
   }
 
-  if (type_snprintf (msg, len + 1, t) < 0) {
-    return NULL;
-  }
+  if (type_snprintf (msg, len + 1, t) < 0) { // LCOV_EXCL_LINE - as above
+    return NULL;                             // LCOV_EXCL_LINE
+  } // LCOV_EXCL_LINE
 
   return msg;
 }
@@ -408,38 +451,38 @@ type_generate_string_rec (char *dest, char *end, const struct type *t)
   switch (t->type) {
     case T_PRIM: {
       int n = snprintf (dest, (size_t)(end - dest), "%s", prim_to_str (t->p));
-      return dest + (n > 0 ? n : 0);
+      return dest + snprintf_len (n);
     }
     case T_STRUCT:
     case T_UNION: {
       char *p = dest;
       int n = snprintf (p, (size_t)(end - p), "%s { ", (t->type == T_STRUCT) ? "struct" : "union");
-      p += (n > 0 ? n : 0);
+      p += snprintf_len (n);
 
       u16 len = t->st.len;
       for (u16 i = 0; i < len; ++i) {
         n = snprintf (p, (size_t)(end - p), "%.*s ", t->st.keys[i].len, t->st.keys[i].data);
-        p += (n > 0 ? n : 0);
+        p += snprintf_len (n);
 
         p = type_generate_string_rec (p, end, t->st.types[i]);
 
         if (i < len - 1) {
           n = snprintf (p, (size_t)(end - p), ", ");
-          p += (n > 0 ? n : 0);
+          p += snprintf_len (n);
         }
       }
       n = snprintf (p, (size_t)(end - p), " }");
-      p += (n > 0 ? n : 0);
+      p += snprintf_len (n);
       return p;
     }
     case T_SARRAY: {
       char *p = dest;
       for (u16 i = 0; i < t->sa.rank; ++i) {
         int n = snprintf (p, (size_t)(end - p), "[%u]", t->sa.dims[i]);
-        p += (n > 0 ? n : 0);
+        p += snprintf_len (n);
       }
       int n = snprintf (p, (size_t)(end - p), " ");
-      p += (n > 0 ? n : 0);
+      p += snprintf_len (n);
       return type_generate_string_rec (p, end, t->sa.t);
     }
     default: {
@@ -590,28 +633,28 @@ type_get_serial_size (u16 *dest, const struct type *t, error *e)
 
   switch (t->type) {
     case T_PRIM: {
-      WRAP (safe_add_u16 (&ret, sizeof (u8), e));
+      WRAP (safe_add_u16_err (&ret, sizeof (u8), e));
       *dest = ret;
       return SUCCESS;
     }
     case T_STRUCT: {
       u16 sub_size;
       WRAP (struct_t_get_serial_size (&sub_size, &t->st, e));
-      WRAP (safe_add_u16 (&ret, sub_size, e));
+      WRAP (safe_add_u16_err (&ret, sub_size, e));
       *dest = ret;
       return SUCCESS;
     }
     case T_UNION: {
       u16 sub_size;
       WRAP (union_t_get_serial_size (&sub_size, &t->un, e));
-      WRAP (safe_add_u16 (&ret, sub_size, e));
+      WRAP (safe_add_u16_err (&ret, sub_size, e));
       *dest = ret;
       return SUCCESS;
     }
     case T_SARRAY: {
       u16 sub_size;
       WRAP (sarray_t_get_serial_size (&sub_size, &t->sa, e));
-      WRAP (safe_add_u16 (&ret, sub_size, e));
+      WRAP (safe_add_u16_err (&ret, sub_size, e));
       *dest = ret;
       return SUCCESS;
     }
@@ -782,6 +825,76 @@ type_deserialize (struct deserializer *src, struct arena_alloc *alloc, error *e)
   }
 }
 
+#ifndef NDEBUG
+TEST (type_deserialize_rejects)
+{
+  TEST_CASE ("exhausted stream - no type code")
+  {
+    const u8            buf[] = {(u8)T_PRIM};
+    struct deserializer d     = dsrlizr_create (buf, sizeof buf);
+    u8                  drain;
+    test_assert (dsrlizr_read (&drain, sizeof drain, &d));
+
+    test_assert_ptr_equal (type_deserialize (&d, &ctx->alloc, &ctx->e), NULL);
+    test_assert_int_equal (ctx->e.cause_code, ERR_CORRUPT);
+    error_reset (&ctx->e);
+  }
+
+  TEST_CASE ("unknown type code")
+  {
+    const u8            buf[] = {99};
+    struct deserializer d     = dsrlizr_create (buf, sizeof buf);
+    test_assert_ptr_equal (type_deserialize (&d, &ctx->alloc, &ctx->e), NULL);
+    test_assert_int_equal (ctx->e.cause_code, ERR_INTERP);
+    error_reset (&ctx->e);
+  }
+
+  TEST_CASE ("truncated prim")
+  {
+    const u8            buf[] = {(u8)T_PRIM};
+    struct deserializer d     = dsrlizr_create (buf, sizeof buf);
+    test_assert_ptr_equal (type_deserialize (&d, &ctx->alloc, &ctx->e), NULL);
+    error_reset (&ctx->e);
+  }
+
+  TEST_CASE ("truncated struct")
+  {
+    const u8            buf[] = {(u8)T_STRUCT};
+    struct deserializer d     = dsrlizr_create (buf, sizeof buf);
+    test_assert_ptr_equal (type_deserialize (&d, &ctx->alloc, &ctx->e), NULL);
+    error_reset (&ctx->e);
+  }
+
+  TEST_CASE ("truncated union")
+  {
+    const u8            buf[] = {(u8)T_UNION};
+    struct deserializer d     = dsrlizr_create (buf, sizeof buf);
+    test_assert_ptr_equal (type_deserialize (&d, &ctx->alloc, &ctx->e), NULL);
+    error_reset (&ctx->e);
+  }
+
+  TEST_CASE ("truncated sarray")
+  {
+    const u8            buf[] = {(u8)T_SARRAY};
+    struct deserializer d     = dsrlizr_create (buf, sizeof buf);
+    test_assert_ptr_equal (type_deserialize (&d, &ctx->alloc, &ctx->e), NULL);
+    error_reset (&ctx->e);
+  }
+
+  TEST_CASE ("out of memory for the node itself")
+  {
+    const u8            buf[] = {(u8)T_PRIM, (u8)U32};
+    struct deserializer d     = dsrlizr_create (buf, sizeof buf);
+    faulty_mem_fail_after (ctx->faulty_mem, 0);
+    test_assert_ptr_equal (type_deserialize (&d, &ctx->faulty_alloc, &ctx->e), NULL);
+    faulty_mem_reset (ctx->faulty_mem);
+    error_reset (&ctx->e);
+  }
+
+  arena_alloc_free_all (&ctx->alloc);
+}
+#endif
+
 /*-----------------------------------------------------------------------------
  * SUBSECTION: type_random
  * @brief Generate a random type
@@ -849,17 +962,17 @@ type_random_once (struct arena_alloc *alloc, u32 depth, t_size max_tsize, error 
     }
 
     default: {
-      error_causef (e, ERR_NOMEM, "invalid type tag");
-      return NULL;
+      UNREACHABLE (); // LCOV_EXCL_LINE
+      return NULL;    // LCOV_EXCL_LINE
     }
   }
-  UNREACHABLE (); // LCOV_EXCL_LINE
 }
 
 struct type *
 type_random (struct arena_alloc *alloc, u32 depth, t_size max_size, error *e)
 {
-  ALLOC_INIT (temp);
+  struct arena_alloc temp;
+  arena_alloc_create_default_with (&temp, alloc->settings.mem);
 
   struct type *ret = NULL;
 
@@ -879,15 +992,11 @@ type_random (struct arena_alloc *alloc, u32 depth, t_size max_size, error *e)
       continue;
     }
 
-    // Random doesn't check string uniqueness
-    // or any other valid type properties, so
-    // random_once could return an invalid type
-    // might be worth it to fix it, but not a big
-    // deal
-    if (type_validate (t, e) != SUCCESS) {
-      error_reset (e);
-      continue;
-    }
+    // Excluding this because it can often not fail on a test
+    if (type_validate (t, e) != SUCCESS) { // LCOV_EXCL_LINE
+      error_reset (e);                     // LCOV_EXCL_LINE
+      continue;                            // LCOV_EXCL_LINE
+    } // LCOV_EXCL_LINE
 
     // Too wide, move on
     if (type_byte_size (t) > max_size) {
@@ -921,6 +1030,41 @@ TEST (type_random)
       iters++;
       test_assert (type_byte_size (t) <= max_tsize);
     }
+  }
+
+  arena_alloc_free_all (&ctx->alloc);
+}
+
+TEST (type_random_gives_up)
+{
+  TEST_CASE ("no type fits in 0 bytes")
+  {
+    // Cannot use 0 size
+    test_assert_ptr_equal (type_random (&ctx->alloc, 0, 0, &ctx->e), NULL);
+    test_assert_int_equal (ctx->e.cause_code, ERR_INVALID_ARGUMENT);
+    error_reset (&ctx->e);
+  }
+
+  TEST_CASE ("out of memory partway through a composite")
+  {
+    faulty_mem_set_fail (ctx->faulty_mem, 0.5f);
+    for (u32 i = 0; i < 1000; ++i) {
+      struct type *t = type_random (&ctx->faulty_alloc, 1, 4096, &ctx->e);
+      if (t == NULL) {
+        error_reset (&ctx->e);
+      }
+    }
+    faulty_mem_reset (ctx->faulty_mem);
+    error_reset (&ctx->e);
+    arena_alloc_free_all (&ctx->faulty_alloc);
+  }
+
+  TEST_CASE ("out of memory on every attempt")
+  {
+    faulty_mem_set_fail (ctx->faulty_mem, 1.0f);
+    test_assert_ptr_equal (type_random (&ctx->faulty_alloc, 0, 4096, &ctx->e), NULL);
+    faulty_mem_reset (ctx->faulty_mem);
+    error_reset (&ctx->e);
   }
 
   arena_alloc_free_all (&ctx->alloc);
@@ -963,10 +1107,10 @@ char *
 get_var_str (struct type *t, u32 *dlen, error *e)
 {
   i32 len = type_snprintf (NULL, 0, t);
-  if (len < 0) {
-    error_causef (e, ERR_IO, "snprintf failed");
-    return NULL;
-  }
+  if (len < 0) {                                 // LCOV_EXCL_LINE - see snprintf_len
+    error_causef (e, ERR_IO, "snprintf failed"); // LCOV_EXCL_LINE
+    return NULL;                                 // LCOV_EXCL_LINE
+  } // LCOV_EXCL_LINE
 
   char *dest = (default_mem ()).table->malloc ((default_mem ()).self, len + 1, sizeof *dest, e);
   if (dest == NULL) {
@@ -975,11 +1119,11 @@ get_var_str (struct type *t, u32 *dlen, error *e)
   }
 
   len = type_snprintf (dest, len + 1, t);
-  if (len < 0) {
-    (default_mem ()).table->free ((default_mem ()).self, dest);
-    error_causef (e, ERR_IO, "snprintf failed");
-    return NULL;
-  }
+  if (len < 0) {                                                // LCOV_EXCL_LINE
+    (default_mem ()).table->free ((default_mem ()).self, dest); // LCOV_EXCL_LINE
+    error_causef (e, ERR_IO, "snprintf failed");                // LCOV_EXCL_LINE
+    return NULL;                                                // LCOV_EXCL_LINE
+  } // LCOV_EXCL_LINE
 
   *dlen = len;
 
@@ -1101,6 +1245,90 @@ type_movemem (struct type *src, struct arena_alloc *alloc, error *e)
 
   return ret;
 }
+
+#ifndef NDEBUG
+TEST (type_movemem_out_of_memory)
+{
+  struct string keys[]       = {strfcstr ("alpha"), strfcstr ("beta")};
+  struct type  *types[]      = {&TU8, &TU64};
+  u32           dims[]       = {3, 4};
+
+  struct type   inner_struct = mk_struct (2, keys, types);
+  struct type   inner_union  = mk_union (2, keys, types);
+  struct type   sarray       = mk_sarray (2, dims, &inner_struct);
+
+  struct type  *sources[]    = {&TU32, &inner_struct, &inner_union, &sarray};
+  const char   *names[]      = {"prim", "struct", "union", "sarray of struct"};
+
+  for (u32 c = 0; c < arrlen (sources); ++c) {
+    TEST_CASE ("%s", names[c])
+    {
+      bool saw_failure = false;
+      bool saw_success = false;
+
+      for (u32 budget = 1; budget <= 512 && !saw_success; budget += 1) {
+        struct arena_alloc a;
+        arena_alloc_create (
+            &a,
+            (struct arena_alloc_settings){
+                .max_alloc_size    = 0,
+                .max_total_size    = budget,
+                .target_chunk_mult = 1,
+                .min_chunk_size    = 1,
+                .max_chunk_size    = 0,
+                .max_chunks        = 0,
+                .mem               = ctx->mem,
+            }
+        );
+
+        struct type *moved = type_movemem (sources[c], &a, &ctx->e);
+        if (moved == NULL) {
+          saw_failure = true;
+          test_assert (ctx->e.cause_code < 0);
+          error_reset (&ctx->e);
+        } else {
+          saw_success = true;
+          test_assert (type_equal (moved, sources[c]));
+        }
+        arena_alloc_free_all (&a);
+      }
+
+      test_assert (saw_failure);
+      test_assert (saw_success);
+    }
+  }
+}
+
+TEST (type_tostr_out_of_memory)
+{
+  struct type        t = mk_prim (U32);
+  struct arena_alloc a;
+  arena_alloc_create (
+      &a,
+      (struct arena_alloc_settings){
+          .max_alloc_size    = 1,
+          .max_total_size    = 0,
+          .target_chunk_mult = 1,
+          .min_chunk_size    = 1,
+          .max_chunk_size    = 0,
+          .max_chunks        = 0,
+          .mem               = ctx->mem,
+      }
+  );
+
+  test_assert_ptr_equal (type_tostr (&a, &t, &ctx->e), NULL);
+  test_assert_int_equal (ctx->e.cause_code, ERR_NOMEM);
+  error_reset (&ctx->e);
+
+  arena_alloc_free_all (&a);
+}
+
+TEST (type_generate_string_null_dest)
+{
+  struct type t = mk_prim (U32);
+  type_generate_string (NULL, &t);
+}
+#endif
 
 /******************************************************************************
  * SECTION: Primitive Types
@@ -1846,6 +2074,45 @@ TEST (type_print_os_sink)
     type_print_os_sink (&s, pctx, &v, 1, sizeof v, &ctx->e);
     ctx->mem.table->free (ctx->mem.self, pctx);
   }
+
+  TEST_CASE ("a partial element leaves the window un-flushed")
+  {
+    struct type t    = {.type = T_PRIM, .p = U32};
+    t_size      size = type_byte_size (&t);
+    struct type_printer_ostream_ctx
+        *pctx       = ctx->mem.table->malloc (ctx->mem.self, 1, sizeof *pctx + size, &ctx->e);
+    pctx->t         = &t;
+    pctx->pos       = 0;
+    pctx->size      = size;
+    struct stream s = {0};
+    u32           v = 0xDEADBEEF;
+
+    // Two bytes of a four byte element: accepted, buffered, and not printed.
+    test_assert_int_equal (type_print_os_sink (&s, pctx, &v, 1, 2, &ctx->e), 2);
+    test_assert_int_equal ((u32)pctx->pos, 2);
+
+    // The rest completes the element, which flushes and rewinds.
+    test_assert_int_equal (type_print_os_sink (&s, pctx, &v, 1, 2, &ctx->e), 2);
+    test_assert_int_equal ((u32)pctx->pos, 0);
+
+    ctx->mem.table->free (ctx->mem.self, pctx);
+  }
+
+  TEST_CASE ("a zero width window accepts nothing")
+  {
+    struct type                      t    = {.type = T_PRIM, .p = U32};
+    struct type_printer_ostream_ctx *pctx = ctx->mem.table
+                                                ->malloc (ctx->mem.self, 1, sizeof *pctx, &ctx->e);
+    pctx->t                               = &t;
+    pctx->pos                             = 0;
+    pctx->size                            = 0;
+    struct stream s                       = {0};
+    u32           v                       = 0xDEADBEEF;
+
+    test_assert_int_equal (type_print_os_sink (&s, pctx, &v, 1, sizeof v, &ctx->e), 0);
+
+    ctx->mem.table->free (ctx->mem.self, pctx);
+  }
 }
 #endif
 
@@ -1890,3 +2157,76 @@ type_stream_printer_init (struct stream *s, struct type *t, error *e)
 
   return SUCCESS;
 }
+
+#ifndef NDEBUG
+// A round trip through the printer stream: init, push whole elements through
+// the sink, close. The sink's buffer is exactly one element wide, so it fills,
+// prints and rewinds once per element.
+TEST (type_stream_printer_init)
+{
+  TEST_CASE ("One element at a time")
+  {
+    struct type   t = {.type = T_PRIM, .p = U32};
+    struct stream s;
+
+    test_assert_int_equal (type_stream_printer_init (&s, &t, &ctx->e), SUCCESS);
+
+    const u32 v = 0xDEADBEEF;
+    for (u32 i = 0; i < 3; ++i) {
+      // The window rewinds after each full element, so every write is accepted
+      test_assert_int_equal (stream_bwrite (&v, 1, sizeof v, &s, &ctx->e), (i32)sizeof v);
+    }
+
+    stream_close (&s);
+  }
+
+  TEST_CASE ("A write wider than the element is accepted one element at a time")
+  {
+    struct type   t = {.type = T_PRIM, .p = U32};
+    struct stream s;
+
+    test_assert_int_equal (type_stream_printer_init (&s, &t, &ctx->e), SUCCESS);
+
+    const u32 v[4] = {1, 2, 3, 4};
+    u32       done = 0;
+    while (done < sizeof v) {
+      const i32 put = stream_bwrite ((const u8 *)v + done, 1, (u32)sizeof v - done, &s, &ctx->e);
+      test_assert_int_equal (put, (i32)type_byte_size (&t));
+      done += (u32)put;
+    }
+    test_assert_int_equal (done, (u32)sizeof v);
+
+    stream_close (&s);
+  }
+
+  TEST_CASE ("A zero length write is a no-op")
+  {
+    struct type   t = {.type = T_PRIM, .p = U32};
+    struct stream s;
+
+    test_assert_int_equal (type_stream_printer_init (&s, &t, &ctx->e), SUCCESS);
+
+    const u32 v = 0;
+    test_assert_int_equal (stream_bwrite (&v, 1, 0, &s, &ctx->e), 0);
+
+    stream_close (&s);
+  }
+
+  TEST_CASE ("A compound type sizes the window to the whole element")
+  {
+    u32           dims[2] = {2, 3};
+    struct type   element = {.type = T_PRIM, .p = U16};
+    struct type   t       = {.type = T_SARRAY, .sa = {.rank = 2, .dims = dims, .t = &element}};
+
+    struct stream s;
+    test_assert_int_equal (type_stream_printer_init (&s, &t, &ctx->e), SUCCESS);
+
+    u8 buf[2 * 3 * sizeof (u16)];
+    memset (buf, 0x11, sizeof buf);
+    test_assert_int_equal (type_byte_size (&t), (t_size)sizeof buf);
+    test_assert_int_equal (stream_bwrite (buf, 1, sizeof buf, &s, &ctx->e), (i32)sizeof buf);
+
+    stream_close (&s);
+  }
+}
+#endif

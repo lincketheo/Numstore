@@ -240,4 +240,37 @@ TEST (file_all_expect_propagates_an_underlying_failure)
   );
   test_assert_int_equal (ctx->os.table->unlink (ctx->os.self, OS_T_FILE, &ctx->e), SUCCESS);
 }
+
+// [ncalls] is bumped by the roll, which every fallible call goes through -
+// so the counter is a count of calls of any kind, not of failures.
+TEST (faulty_num_os_calls)
+{
+  struct i_os f = ctx->faulty_os;
+
+  TEST_CASE ("A fallible call bumps the counter")
+  {
+    const u32 before = faulty_num_os_calls (f);
+
+    i_mutex   m;
+    test_assert_int_equal (f.table->mutex_create (f.self, &m, &ctx->e), SUCCESS);
+    test_assert_int_equal (faulty_num_os_calls (f), before + 1);
+
+    f.table->mutex_free (f.self, m.self);
+  }
+
+  TEST_CASE ("A failed call is still a call")
+  {
+    const u32 before = faulty_num_os_calls (f);
+
+    faulty_os_fail_after (f, 0);
+
+    i_mutex m;
+    test_assert (f.table->mutex_create (f.self, &m, &ctx->e) != SUCCESS);
+    error_reset (&ctx->e);
+
+    test_assert_int_equal (faulty_num_os_calls (f), before + 1);
+  }
+
+  faulty_os_set_fail (f, 0.0f);
+}
 #endif // NDEBUG

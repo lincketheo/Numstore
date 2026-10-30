@@ -27,7 +27,6 @@
 #include "core/ns_ext_array.h"
 #include "core/ns_htable.h"
 #include "core/ns_slab_alloc.h"
-#include "core/ns_stdtypes.h"
 #include "nscore/variables/ns_variables.h"
 
 struct mem_vhmap
@@ -54,7 +53,6 @@ struct var_with_data *mem_vhmap_get (struct mem_vhmap *db, struct string name);
 void mem_vhmap_remove (struct mem_vhmap *db, struct string name);
 
 // Utilities
-u32 mem_vhmap_count (struct mem_vhmap *db);
 struct var_with_data *mem_vhmap_random (struct mem_vhmap *db);
 
 #endif // MEM_VHMAP_H
